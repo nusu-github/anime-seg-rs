@@ -1,155 +1,119 @@
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::Result;
 use image::{
-    imageops, DynamicImage, GenericImageView, ImageBuffer, Luma, Pixel, RgbImage, RgbaImage,
+    EncodableLayout,
+    GenericImageView, ImageBuffer, imageops::{self, FilterType}, Rgb, RgbaImage, RgbImage,
 };
 use ndarray::prelude::*;
-use ort::{CUDAExecutionProvider, DirectMLExecutionProvider, Session, Tensor};
+use num_traits::AsPrimitive;
+use ort::Session;
 
-struct PreprocessedImage {
-    tensor: Array4<f32>,
-    crop: Crop,
+use crate::imageops_ai::{
+    clip_minimum_border::{clip_minimum_border, Crop},
+    mask::{apply_mask, Gray32FImage},
+    padding::{get_position, padding_square, Position},
+};
+
+#[cfg(feature = "fp16")]
+type Precision = half::f16;
+#[cfg(not(feature = "fp16"))]
+type Precision = f32;
+
+pub struct Model {
+    image_size: u32,
+    session: Session,
 }
 
-struct Crop {
-    x1: u32,
-    y1: u32,
-    x2: u32,
-    y2: u32,
-}
-
-pub(crate) struct MaskPredictor {
-    session: Mutex<Session>,
-}
-
-impl PreprocessedImage {
-    fn new(image: &DynamicImage) -> Result<Self> {
-        let img = image
-            .resize(1024, 1024, imageops::FilterType::Lanczos3)
-            .to_rgb8();
-        let (width, height) = img.dimensions();
-        let mut img_buf = RgbImage::new(1024, 1024);
-        let x1 = (1024 - width) / 2;
-        let y1 = (1024 - height) / 2;
-        let x2 = x1 + width;
-        let y2 = y1 + height;
-        imageops::overlay(&mut img_buf, &img, x1 as i64, y1 as i64);
-
-        let tensor = Array3::from_shape_vec((1024, 1024, 3), img_buf.into_raw())?;
-        let tensor = tensor
-            .slice(s![NewAxis, .., .., ..;-1])
-            .permuted_axes([0, 3, 1, 2])
-            .mapv(|x| f32::from(x) / 255.0);
-
-        Ok(Self {
-            tensor,
-            crop: Crop { x1, y1, x2, y2 },
-        })
-    }
-}
-
-impl MaskPredictor {
-    pub(crate) fn new(model_path: &Path, device_id: i32) -> Result<Self> {
+impl Model {
+    pub fn new<P: AsRef<Path>>(model_path: P, num_threads: usize, device_id: i32) -> Result<Self> {
         let session = Session::builder()?
             .with_execution_providers([
-                CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .with_conv_max_workspace(true)
-                    .with_copy_in_default_stream(true)
-                    .build(),
-                DirectMLExecutionProvider::default()
+                #[cfg(feature = "cuda")]
+                    ort::CUDAExecutionProvider::default()
                     .with_device_id(device_id)
                     .build(),
             ])?
+            .with_intra_threads(num_threads)?
             .with_memory_pattern(true)?
-            .with_model_from_file(model_path)?;
+            .commit_from_file(model_path)?;
+
+        let image_size = session.inputs[0].input_type.tensor_dimensions().unwrap()[2];
+        let tensor: Array4<Precision> =
+            Array4::<f32>::zeros([1, 3, image_size.as_(), image_size.as_()]).mapv(AsPrimitive::as_);
+        session.run(ort::inputs!["img" => tensor]?)?;
 
         Ok(Self {
-            session: Mutex::new(session),
+            image_size: image_size.as_(),
+            session,
         })
     }
 
-    pub(crate) fn predict(&self, image_path: &Path) -> Result<RgbaImage> {
-        let (original_image, preprocessed_image) = MaskPredictor::preprocess_image(image_path)?;
-        let (width, height) = original_image.dimensions();
-        let mask = self.predict_mask(&preprocessed_image, width, height)?;
+    pub fn predict(&self, image: RgbImage) -> Result<RgbaImage> {
+        let (width, height) = image.dimensions();
+        let (tensor, crop) = self.preprocess(&image)?;
 
-        let (width, height) = original_image.dimensions();
-        let masked_image =
-            MaskPredictor::apply_mask(&original_image.to_rgb8(), &mask, width, height);
+        let mask = self.predict_mask(tensor, crop, width, height)?;
+        let image = apply_mask(&image, &mask, true).unwrap();
 
-        Ok(masked_image)
-    }
+        let image = clip_minimum_border(image, 1, 8);
 
-    fn preprocess_image(image_path: &Path) -> Result<(DynamicImage, PreprocessedImage)> {
-        let original_image = image::open(image_path)?;
-        let preprocessed_image = PreprocessedImage::new(&original_image)?;
-        Ok((original_image, preprocessed_image))
-    }
-
-    fn apply_mask(
-        image: &RgbImage,
-        mask: &ImageBuffer<Luma<f32>, Vec<f32>>,
-        width: u32,
-        height: u32,
-    ) -> RgbaImage {
-        let mut masked_image = RgbaImage::new(width, height);
-        for ((mask_pixel, image_pixel), out_pixel) in mask
-            .pixels()
-            .zip(image.pixels())
-            .zip(masked_image.pixels_mut())
-        {
-            let mask_value = mask_pixel.channels()[0];
-            let channels = image_pixel
-                .channels()
-                .iter()
-                .zip(out_pixel.channels_mut().iter_mut());
-            for (in_channel, out_channel) in channels {
-                *out_channel =
-                    ((mask_value * f32::from(*in_channel)) + 255.0 * (1.0 - mask_value)) as u8;
-            }
-            out_pixel.channels_mut()[3] = (mask_value * 255.0) as u8;
-        }
-        masked_image
-    }
-
-    fn extract_mask(mask_tensor: &Tensor<f32>, crop: &Crop) -> Array3<f32> {
-        mask_tensor
-            .view()
-            .index_axis(Axis(0), 0)
-            .slice(s![
-                ..,
-                crop.y1 as usize..crop.y2 as usize,
-                crop.x1 as usize..crop.x2 as usize,
-            ])
-            .permuted_axes([1, 2, 0])
-            .to_owned()
+        Ok(image)
     }
 
     fn predict_mask(
         &self,
-        preprocessed_image: &PreprocessedImage,
+        tensor: Array4<Precision>,
+        crop: Crop,
         original_width: u32,
         original_height: u32,
-    ) -> Result<ImageBuffer<Luma<f32>, Vec<f32>>> {
-        let mask = {
-            let session = self.session.lock().unwrap();
-            let outputs = session.run(ort::inputs!["img" => preprocessed_image.tensor.view()]?)?;
-            let outputs = outputs.get("mask").unwrap().extract_tensor::<f32>()?;
-            MaskPredictor::extract_mask(&outputs, &preprocessed_image.crop)
-        };
+    ) -> Result<Gray32FImage> {
+        let outputs = self.session.run(ort::inputs!["img" => tensor]?)?;
+        let outputs = outputs["mask"]
+            .try_extract_tensor::<Precision>()?
+            .into_dimensionality::<Ix4>()?;
+        let mask = extract_mask(outputs);
 
-        let (height, width, _) = mask.dim();
-        let mask = ImageBuffer::from_raw(width as u32, height as u32, mask.into_raw_vec()).unwrap();
-        let mask = imageops::resize(
-            &mask,
-            original_width,
-            original_height,
-            imageops::FilterType::Lanczos3,
-        );
+        let mask =
+            ImageBuffer::from_vec(self.image_size, self.image_size, mask.into_raw_vec()).unwrap();
+        let [x, y, w, h] = crop;
+        let mask = mask.view(x, y, w, h).to_image();
+        let mask = imageops::resize(&mask, original_width, original_height, FilterType::Triangle);
 
         Ok(mask)
     }
+
+    fn preprocess(&self, image: &RgbImage) -> Result<(Array4<Precision>, Crop)> {
+        let image = imageops::resize(
+            image,
+            self.image_size,
+            self.image_size,
+            FilterType::Lanczos3,
+        );
+
+        let (w, h) = image.dimensions();
+        let (x, y) = get_position(w, h, self.image_size, self.image_size, Position::Center)
+            .unwrap_or_default();
+
+        let image = padding_square(&image, Position::Center, Rgb([0, 0, 0])).unwrap();
+
+        let tensor = ArrayView3::from_shape(
+            (self.image_size.as_(), self.image_size.as_(), 3),
+            image.as_bytes(),
+        )?
+            .permuted_axes([2, 0, 1])
+            .slice(s![NewAxis, ..;-1, .., ..])
+            .mapv(|x| {
+                <u8 as AsPrimitive<Precision>>::as_(x) / <f32 as AsPrimitive<Precision>>::as_(255.0)
+            });
+
+        Ok((tensor, [x.as_(), y.as_(), w, h]))
+    }
+}
+
+fn extract_mask(tensor: ArrayView4<Precision>) -> Array3<f32> {
+    tensor
+        .index_axis(Axis(0), 0)
+        .permuted_axes([1, 2, 0])
+        .mapv(AsPrimitive::as_)
 }
