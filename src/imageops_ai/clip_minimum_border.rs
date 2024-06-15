@@ -7,9 +7,9 @@ pub fn clip_minimum_border<P, S>(
     iterations: usize,
     threshold: u8,
 ) -> ImageBuffer<P, Vec<S>>
-    where
-        P: Pixel<Subpixel=S> + 'static,
-        S: Primitive + 'static,
+where
+    P: Pixel<Subpixel=S> + 'static,
+    S: Primitive + 'static,
 {
     let mut image = image;
     for i in 0..iterations {
@@ -27,11 +27,11 @@ pub fn clip_minimum_border<P, S>(
 }
 
 fn extract_corners<I, P, S>(image: &I) -> Vec<Luma<S>>
-    where
-        I: GenericImageView<Pixel=P>,
-        P: Pixel<Subpixel=S> + 'static,
-        Luma<S>: Pixel<Subpixel=S>,
-        S: Primitive + 'static,
+where
+    I: GenericImageView<Pixel=P>,
+    P: Pixel<Subpixel=S>,
+    Luma<S>: Pixel<Subpixel=S>,
+    S: Primitive,
 {
     let (width, height) = image.dimensions();
     vec![
@@ -45,9 +45,9 @@ fn extract_corners<I, P, S>(image: &I) -> Vec<Luma<S>>
 }
 
 fn clip_image<P, S>(image: &ImageBuffer<P, Vec<S>>, background: &Luma<S>, threshold: u8) -> Crop
-    where
-        P: Pixel<Subpixel=S> + 'static,
-        S: Primitive + 'static,
+where
+    P: Pixel<Subpixel=S>,
+    S: Primitive,
 {
     let (width, height) = image.dimensions();
     let mut x1 = width;

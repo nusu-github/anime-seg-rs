@@ -5,7 +5,6 @@ edition = "2021"
 
 [features]
 default = []
-fp16 = []
 cuda = ["ort/cuda"]
 
 [dependencies]

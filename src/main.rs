@@ -1,12 +1,15 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+};
 
-use anyhow::*;
+use anyhow::{Context, ensure, Result};
 use clap::Parser;
 use image::ImageFormat;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use walkdir::WalkDir;
 
 use crate::model::Model;
@@ -32,7 +35,9 @@ struct Config {
     #[arg(short, long, default_value_t = 0)]
     device_id: i32,
 
-    #[arg(short, long, default_value_t = 2)]
+    #[arg(
+        short, long, default_value_t = thread::available_parallelism().unwrap().get()
+    )]
     num_threads: usize,
 }
 
@@ -53,6 +58,9 @@ fn main() -> Result<()> {
     );
 
     let model = Model::new(&config.model_path, config.num_threads, config.device_id)?;
+    ThreadPoolBuilder::new()
+        .num_threads(config.num_threads)
+        .build_global()?;
 
     let image_paths = WalkDir::new(&config.input_dir)
         .into_iter()
@@ -70,20 +78,19 @@ fn main() -> Result<()> {
     );
 
     image_paths
-        .into_par_iter()
+        .par_iter()
         .progress_with(progress_bar.clone())
-        .map(|path| {
+        .try_for_each_with(model, |model, path| {
             let image = image::open(&path)
                 .with_context(|| format!("Failed to open image: {}", path.display()))?
                 .into_rgb8();
 
-            let image = model.predict(image)?;
+            let image = model.predict(&image)?;
             let output_path = construct_output_path(path, &config)?;
             image
                 .save(&output_path)
                 .with_context(|| format!("Failed to save image: {}", output_path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
+        })?;
 
     progress_bar.finish();
 
