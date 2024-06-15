@@ -1,4 +1,8 @@
-use std::{ops::{Div, Mul}, path::Path, sync::Arc};
+use std::{
+    ops::Div,
+    path::Path,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use image::{
@@ -10,7 +14,7 @@ use num_traits::AsPrimitive;
 use ort::{Session, TensorElementType};
 
 use crate::imageops_ai::{
-    clip_minimum_border::{clip_minimum_border, Crop},
+    clip_minimum_border::Crop,
     mask::{apply_mask, Gray32FImage},
     padding::{get_position, padding_square, Position},
 };
@@ -75,10 +79,9 @@ impl Model {
         let (tensor, crop) = self.preprocess(image)?;
 
         let mask = self.predict_mask(tensor.view(), crop)?;
-        let mask = imageops::resize(&mask, width, height, FilterType::Lanczos3);
+        let mask = imageops::resize(&mask, width, height, FilterType::Triangle);
 
         let image = apply_mask(image, &mask, true).unwrap();
-        let image = clip_minimum_border(image, 1, 8);
 
         Ok(image)
     }
@@ -102,7 +105,7 @@ impl Model {
             }
         };
 
-        let mask = extract_mask(outputs, 0.5);
+        let mask = extract_mask(outputs.view());
 
         let mask =
             ImageBuffer::from_vec(self.image_size, self.image_size, mask.into_raw_vec()).unwrap();
@@ -117,7 +120,7 @@ impl Model {
             image,
             self.image_size,
             self.image_size,
-            FilterType::Lanczos3,
+            FilterType::Triangle,
         );
 
         let (w, h) = image.dimensions();
@@ -139,15 +142,9 @@ impl Model {
     }
 }
 
-fn extract_mask(tensor: Array4<f32>, threshold: f32) -> Array3<f32> {
-    let threshold = threshold * 255.0;
+fn extract_mask(tensor: ArrayView4<f32>) -> Array3<f32> {
     tensor
         .index_axis(Axis(0), 0)
         .permuted_axes([1, 2, 0])
-        .mul(255.0)
-        .mapv(|x| {
-            let x = x.floor();
-            if x > threshold { x } else { 0.0 }
-        })
-        .div(255.0)
+        .into_owned()
 }
