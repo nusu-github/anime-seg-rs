@@ -31,12 +31,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build Release
-        if: runner.os == 'Linux' || runner.os == 'Windows'
         run: cargo build --release --verbose
-
-      - name: Build Release
-        if: runner.os == 'macOS'
-        run: cargo build --release --features coreml --verbose
 
       - name: Packaging
         if: runner.os == 'Linux' || runner.os == 'macOS'
