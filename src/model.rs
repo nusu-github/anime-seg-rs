@@ -1,9 +1,13 @@
-use std::{ops::{Div, Mul}, path::Path, sync::Arc};
+use std::{
+    ops::{Div, Mul},
+    path::Path,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use image::{
-    EncodableLayout,
-    GenericImageView, ImageBuffer, imageops::{self, FilterType}, Rgb, RgbaImage, RgbImage,
+    imageops::{self, FilterType},
+    EncodableLayout, GenericImageView, ImageBuffer, Rgb, RgbImage, RgbaImage,
 };
 use ndarray::prelude::*;
 use num_traits::AsPrimitive;
@@ -31,13 +35,22 @@ pub struct Model {
 
 impl Model {
     pub fn new<P: AsRef<Path>>(model_path: P, num_threads: usize, device_id: i32) -> Result<Self> {
-        let session = Session::builder()?
-            .with_execution_providers([
-                #[cfg(feature = "cuda")]
+        let mut execution_providers = Vec::new();
+
+        if cfg!(feature = "cuda") {
+            execution_providers.push(
                 ort::CUDAExecutionProvider::default()
                     .with_device_id(device_id)
                     .build(),
-            ])?
+            );
+        }
+
+        if cfg!(feature = "coreml") {
+            execution_providers.push(ort::CoreMLExecutionProvider::default().build());
+        }
+
+        let session = Session::builder()?
+            .with_execution_providers(execution_providers)?
             .with_intra_threads(num_threads)?
             .with_memory_pattern(true)?
             .commit_from_file(model_path)?;
@@ -130,10 +143,10 @@ impl Model {
             (self.image_size.as_(), self.image_size.as_(), 3),
             image.as_bytes(),
         )?
-            .permuted_axes([2, 0, 1])
-            .slice(s![NewAxis, .., .., ..])
-            .mapv(AsPrimitive::as_)
-            .div(255.0);
+        .permuted_axes([2, 0, 1])
+        .slice(s![NewAxis, .., .., ..])
+        .mapv(AsPrimitive::as_)
+        .div(255.0);
 
         Ok((tensor, [x.as_(), y.as_(), w, h]))
     }
@@ -147,7 +160,11 @@ fn extract_mask(tensor: Array4<f32>, threshold: f32) -> Array3<f32> {
         .mul(255.0)
         .mapv(|x| {
             let x = x.floor();
-            if x > threshold { x } else { 0.0 }
+            if x > threshold {
+                x
+            } else {
+                0.0
+            }
         })
         .div(255.0)
 }

@@ -13,7 +13,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -28,24 +28,29 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build Release
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         run: cargo build --release --verbose
 
+      - name: Build Release
+        if: runner.os == 'macOS'
+        run: cargo build --release --features coreml --verbose
+
       - name: Packaging
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           mkdir package
           cp target/release/anime-seg-rs package/anime-seg-rs
 
       - name: Packaging
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         run: |
           mkdir package
           copy target\release\anime-seg-rs.exe package\anime-seg-rs.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: anime-seg-rs_${{ matrix.os }}
+          name: anime-seg-rs_${{ runner.os }}
           path: package
