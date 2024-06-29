@@ -17,15 +17,13 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: Jimver/cuda-toolkit@master
-
       - uses: actions/checkout@v4
 
       - name: Build Debug
-        run: cargo build --features cuda --verbose
+        run: cargo build --verbose
 
       - name: Build Release
-        run: cargo build --features cuda --release --verbose
+        run: cargo build --release --verbose
 
       - uses: actions/upload-artifact@v4
         with:
