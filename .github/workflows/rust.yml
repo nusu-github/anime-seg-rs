@@ -19,13 +19,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Debug
-        run: cargo build --verbose
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build Release
         run: cargo build --release --verbose
 
+      - name: Packaging
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir package
+          cp target/release/anime-seg-rs package/anime-seg-rs
+
+      - name: Packaging
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir package
+          copy target\release\anime-seg-rs.exe package\anime-seg-rs.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: anime-seg-rs_${{ matrix.os }}
-          path: target
+          path: package
