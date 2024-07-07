@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, ensure, Result};
+use anyhow::{ensure, Context, Result};
 use clap::Parser;
 use image::ImageFormat;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
         ProgressStyle::with_template(
             "{spinner:.green} [{elapsed}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec} {eta})",
         )?
-            .progress_chars("#>-"),
+        .progress_chars("#>-"),
     );
 
     image_paths

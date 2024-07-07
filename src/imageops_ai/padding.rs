@@ -1,4 +1,4 @@
-use image::{GenericImageView, ImageBuffer, imageops, Pixel, Primitive};
+use image::{imageops, GenericImageView, ImageBuffer, Pixel, Primitive};
 use num_traits::AsPrimitive;
 
 #[allow(dead_code)]
@@ -79,10 +79,10 @@ pub fn padding<I, P, S>(
     position: Position,
     color: P,
 ) -> Option<ImageBuffer<P, Vec<S>>>
-    where
-        I: GenericImageView<Pixel=P>,
-        P: Pixel<Subpixel=S>,
-        S: Primitive,
+where
+    I: GenericImageView<Pixel = P>,
+    P: Pixel<Subpixel = S>,
+    S: Primitive,
 {
     let (width, height) = image.dimensions();
 
@@ -102,10 +102,10 @@ pub fn padding_square<I, P, S>(
     position: Position,
     color: P,
 ) -> Option<ImageBuffer<P, Vec<S>>>
-    where
-        I: GenericImageView<Pixel=P>,
-        P: Pixel<Subpixel=S>,
-        S: Primitive,
+where
+    I: GenericImageView<Pixel = P>,
+    P: Pixel<Subpixel = S>,
+    S: Primitive,
 {
     let (width, height) = image.dimensions();
 

@@ -14,7 +14,6 @@ anime-seg-rsは、[anime-segmentation](https://github.com/SkyTNT/anime-segmentat
 - CUDAによる高速化（オプション）
 - マルチスレッド処理
 - 処理状況を追跡するプログレスバー
-- 高速推論のためのFP16（半精度）モデルのサポート
 
 ## 前提条件
 
@@ -76,27 +75,6 @@ cargo build --release
 このRust実装は、元のanime-segmentationプロジェクトのISNet ONNXモデルで動作するように
 設計されています。事前学習済みのISNetモデルは [Hugging Face](https://huggingface.co/skytnt/anime-seg)
 からダウンロードできます。
-
-### FP16モデル変換
-
-より高速な推論のために、元のFP32モデルをFP16（半精度）に変換することをおすすめします。
-これにより、特にGPU上でのパフォーマンスが大幅に向上する可能性があります。
-モデルを変換するには、onnxconverter-commonをインストールして、
-元のanime-segmentationプロジェクトの `export.py`スクリプトに以下のようなコードを追加してください。
-
-```shell
-pip install onnxconverter-common
-```
-
-```python
-from onnxconverter_common import float16
-
-# 元のモデルを読み込む
-model = onnx.load("元のモデルへのパス.onnx")
-
-# FP16に変換
-model_fp16 = float16.convert_float_to_float16(model, min_positive_val=2e-11, max_finite_val=6)
-```
 
 ## ライセンス
 
