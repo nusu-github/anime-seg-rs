@@ -1,8 +1,6 @@
 use image::{GenericImageView, ImageBuffer, Luma, Pixel, Primitive, Rgb, Rgba};
 use num_traits::AsPrimitive;
 
-pub type Gray32FImage = ImageBuffer<Luma<f32>, Vec<f32>>;
-
 pub fn apply_mask<I, M, S>(image: &I, mask: &M, edit: bool) -> Option<ImageBuffer<Rgba<S>, Vec<S>>>
 where
     I: GenericImageView<Pixel = Rgb<S>>,

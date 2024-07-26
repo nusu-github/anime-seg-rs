@@ -1,14 +1,12 @@
 use image::{GenericImageView, ImageBuffer, Luma, Pixel, Primitive};
 
-pub type Crop = [u32; 4];
-
 pub fn clip_minimum_border<P, S>(
     image: ImageBuffer<P, Vec<S>>,
     iterations: usize,
     threshold: u8,
 ) -> ImageBuffer<P, Vec<S>>
 where
-    P: Pixel<Subpixel=S> + 'static,
+    P: Pixel<Subpixel = S> + 'static,
     S: Primitive + 'static,
 {
     let mut image = image;
@@ -28,9 +26,9 @@ where
 
 fn extract_corners<I, P, S>(image: &I) -> Vec<Luma<S>>
 where
-    I: GenericImageView<Pixel=P>,
-    P: Pixel<Subpixel=S>,
-    Luma<S>: Pixel<Subpixel=S>,
+    I: GenericImageView<Pixel = P>,
+    P: Pixel<Subpixel = S>,
+    Luma<S>: Pixel<Subpixel = S>,
     S: Primitive,
 {
     let (width, height) = image.dimensions();
@@ -44,9 +42,9 @@ where
     ]
 }
 
-fn clip_image<P, S>(image: &ImageBuffer<P, Vec<S>>, background: &Luma<S>, threshold: u8) -> Crop
+fn clip_image<P, S>(image: &ImageBuffer<P, Vec<S>>, background: &Luma<S>, threshold: u8) -> [u32; 4]
 where
-    P: Pixel<Subpixel=S>,
+    P: Pixel<Subpixel = S>,
     S: Primitive,
 {
     let (width, height) = image.dimensions();
