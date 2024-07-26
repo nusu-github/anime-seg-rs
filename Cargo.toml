@@ -13,7 +13,7 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossbeam-channel = "0.5"
 image = { version = "0.25" }
-indicatif = { version = "0.17", features = ["rayon"] }
+indicatif = "0.17"
 ndarray = "0.15"
 num-traits = "0.2"
 ort = { version = "2.0.0-rc.4" }
