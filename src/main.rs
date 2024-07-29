@@ -105,25 +105,30 @@ fn main() -> Result<()> {
 
         s.spawn(move |s| {
             while let Ok((image, path, mask, crop)) = inference_rx.recv() {
-                let relative_path = path.strip_prefix(&config.input_dir).unwrap();
-                let output_path = config
-                    .output_dir
-                    .join(relative_path)
-                    .with_extension(&config.format);
-                s.spawn(move |_| {
-                    let (width, height) = image.dimensions();
-                    let mask = postprocess_mask(mask, image_size, crop, width, height);
-                    let image = apply_mask(&image, &mask, true).unwrap();
-                    let image = clip_minimum_border(image, 1, 8);
+                s.spawn({
+                    let relative_path = path.strip_prefix(&config.input_dir).unwrap();
+                    let output_path = config
+                        .output_dir
+                        .join(relative_path)
+                        .with_extension(&config.format);
+                    let output_bar = output_bar.clone();
+                    move |_| {
+                        let (width, height) = image.dimensions();
+                        let mask = postprocess_mask(mask, image_size, crop, width, height);
+                        let image = apply_mask(&image, &mask, true).unwrap();
+                        let image = clip_minimum_border(image, 1, 8);
 
-                    fs::create_dir_all(output_path.parent().unwrap()).unwrap();
-                    image
-                        .save(&output_path)
-                        .with_context(|| format!("Failed to save image: {}", output_path.display()))
-                        .unwrap();
+                        fs::create_dir_all(output_path.parent().unwrap()).unwrap();
+                        image
+                            .save(&output_path)
+                            .with_context(|| {
+                                format!("Failed to save image: {}", output_path.display())
+                            })
+                            .unwrap();
+
+                        output_bar.inc(1);
+                    }
                 });
-
-                output_bar.inc(1);
             }
         });
     });
