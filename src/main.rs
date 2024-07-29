@@ -112,7 +112,7 @@ fn main() -> Result<()> {
                     .with_extension(&config.format);
                 s.spawn(move |_| {
                     let (width, height) = image.dimensions();
-                    let mask = postprocess_mask(mask.view(), image_size, crop, width, height);
+                    let mask = postprocess_mask(mask, image_size, crop, width, height);
                     let image = apply_mask(&image, &mask, true).unwrap();
                     let image = clip_minimum_border(image, 1, 8);
 
