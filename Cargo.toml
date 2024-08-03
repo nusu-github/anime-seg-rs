@@ -14,7 +14,7 @@ clap = { version = "4.5", features = ["derive"] }
 crossbeam-channel = "0.5"
 image = { version = "0.25" }
 indicatif = "0.17"
-ndarray = "0.15"
+ndarray = "0.16"
 num-traits = "0.2"
 ort = { version = "2.0.0-rc.4" }
 rayon = "1.10"
