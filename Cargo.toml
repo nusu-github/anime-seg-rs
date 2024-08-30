@@ -1,21 +1,27 @@
 [package]
 name = "anime-seg-rs"
-version = "0.1.0"
+version = "0.2.0"
+authors = []
 edition = "2021"
+description = "Trying to implement anime-seg in Rust"
+repository = "https://github.com/nusu-github/anime-seg-rs"
 license = "Apache-2.0"
+readme = "README.md"
+categories = ["command-line-utilities"]
+keywords = ["anime", "segmentation", "image-segmentation", "deep-learning", "pytorch"]
 
 [features]
 default = []
 cuda = ["ort/cuda"]
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-crossbeam-channel = "0.5"
-image = { version = "0.25" }
-indicatif = "0.17"
-ndarray = "0.15"
-num-traits = "0.2"
-ort = { version = "2.0.0-rc.4" }
-rayon = "1.10"
-walkdir = "2.5"
+anyhow = "^1.0.86"
+clap = { version = "^4.5.16", features = ["derive"] }
+image = { version = "^0.25.2", default-features = false, features = ["jpeg", "png", "webp"] }
+indicatif = "^0.17.8"
+ndarray = "^0.16.1"
+num-traits = "^0.2.19"
+ort = { version = "2.0.0-rc.5", features = ["load-dynamic"] }
+parking_lot = { version = "^0.12.3", features = ["hardware-lock-elision"] }
+rayon = "^1.10.0"
+walkdir = "^2.5.0"

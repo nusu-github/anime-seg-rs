@@ -1,45 +1,51 @@
+use anyhow::{anyhow, ensure, Result};
 use image::{GenericImageView, ImageBuffer, Luma, Pixel, Primitive, Rgb, Rgba};
 use num_traits::AsPrimitive;
 
-pub fn apply_mask<I, M, S>(image: &I, mask: &M, edit: bool) -> Option<ImageBuffer<Rgba<S>, Vec<S>>>
+use crate::imageops_ai::get_max_value;
+
+pub fn apply<I, M, SI, SM>(
+    image: &I,
+    mask: &M,
+    apply_edit: bool,
+) -> Result<ImageBuffer<Rgba<SI>, Vec<SI>>>
 where
-    I: GenericImageView<Pixel = Rgb<S>>,
-    M: GenericImageView<Pixel = Luma<f32>>,
-    Rgba<S>: Pixel<Subpixel = S>,
-    S: Primitive + 'static,
-    f32: AsPrimitive<S>,
+    I: GenericImageView<Pixel = Rgb<SI>>,
+    M: GenericImageView<Pixel = Luma<SM>>,
+    Rgba<SI>: Pixel<Subpixel = SI>,
+    SI: Primitive + 'static + AsPrimitive<f32>,
+    SM: Primitive + 'static + AsPrimitive<f32>,
+    f32: AsPrimitive<SI>,
+    f32: AsPrimitive<SM>,
 {
-    if image.width() != mask.width() || image.height() != mask.height() {
-        return None;
-    }
+    ensure!(
+        image.dimensions() == mask.dimensions(),
+        "Image and mask dimensions do not match"
+    );
 
-    let new = match edit {
-        true => image
-            .pixels()
-            .zip(mask.pixels())
-            .map(|(image, mask)| {
-                let [r, g, b] = image.2 .0;
-                let a = mask.2 .0[0];
-                let r: S = (a * r.to_f32().unwrap()).as_();
-                let g: S = (a * g.to_f32().unwrap()).as_();
-                let b: S = (a * b.to_f32().unwrap()).as_();
-                let a: S = (a * S::DEFAULT_MAX_VALUE.to_f32().unwrap()).as_();
-                [r, g, b, a]
-            })
-            .flatten()
-            .collect::<Vec<S>>(),
-        false => image
-            .pixels()
-            .zip(mask.pixels())
-            .map(|(image, mask)| {
-                let [r, g, b] = image.2 .0;
-                let a = mask.2 .0[0];
-                let a: S = (a * S::DEFAULT_MAX_VALUE.to_f32().unwrap()).as_();
-                [r, g, b, a]
-            })
-            .flatten()
-            .collect::<Vec<S>>(),
-    };
+    let sm_max: f32 = get_max_value::<SM>();
+    let si_max: f32 = get_max_value::<SI>();
 
-    ImageBuffer::from_raw(image.width(), image.height(), new)
+    let processed_pixels = image
+        .pixels()
+        .zip(mask.pixels())
+        .flat_map(|(image_pixel, mask_pixel)| {
+            let Rgb([red, green, blue]) = image_pixel.2;
+            let alpha = (mask_pixel.2 .0[0].as_() / sm_max) * si_max;
+            let alpha_scaled: SI = alpha.as_();
+
+            if apply_edit {
+                [red, green, blue]
+                    .iter()
+                    .map(|&c| ((c.as_() / si_max) * alpha).as_())
+                    .chain(std::iter::once(alpha_scaled))
+                    .collect::<Vec<SI>>()
+            } else {
+                vec![red, green, blue, alpha_scaled]
+            }
+        })
+        .collect::<Vec<SI>>();
+
+    ImageBuffer::from_raw(image.width(), image.height(), processed_pixels)
+        .ok_or_else(|| anyhow!("Failed to create ImageBuffer from processed pixels"))
 }
