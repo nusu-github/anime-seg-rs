@@ -43,18 +43,15 @@ anime-seg-rsは、[anime-segmentation](https://github.com/SkyTNT/anime-segmentat
 以下のコマンドでツールを実行します：
 
 ```shell
-anime-seg-rs --input-dir <入力ディレクトリ> --output-dir <出力ディレクトリ> --model-path <モデルパス> [オプション]
+anime-seg-rs --model-path <モデルパス> [オプション] <入力ディレクトリ> <出力ディレクトリ> 
 ```
 
 ### 引数：
 
-- `--input-dir, -i`: 入力画像を含むディレクトリ
-- `--output-dir, -o`: 処理済み画像を保存するディレクトリ
 - `--model-path, -m`: ISNetモデルファイルのパス（ONNXフォーマット）
 - `--format, -f`: 出力画像フォーマット（デフォルト: "png"）
 - `--device-id, -d`: CUDA デバイスID（デフォルト: 0）
-- `--num-threads, -n`: 処理スレッド数（デフォルト: 論理CPUの数）
-    - バッチサイズも兼任しているのでGPUのメモリ次第で調整してください
+- `--batch-size, -b`: バッチサイズ（デフォルト: 1）
 
 ### 使用例：
 
