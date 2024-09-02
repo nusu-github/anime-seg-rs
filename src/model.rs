@@ -1,9 +1,5 @@
-use std::ops::Div;
-use std::path::Path;
+use std::{ops::Div, path::Path};
 
-use crate::imageops_ai::padding::{self, Position};
-use crate::imageops_ai::{get_max_value, is_floating_point};
-use crate::semaphore::Semaphore;
 use anyhow::Result;
 use image::{
     imageops, imageops::FilterType, GenericImageView, ImageBuffer, Luma, Pixel, Primitive, Rgb,
@@ -12,6 +8,9 @@ use ndarray::prelude::*;
 use nshare::AsNdarray3;
 use num_traits::AsPrimitive;
 use ort::{CUDAExecutionProvider, Session, SessionBuilder};
+
+use crate::imageops_ai::{get_max_value, is_floating_point, Padding};
+use crate::semaphore::Semaphore;
 
 pub struct Model {
     pub image_size: u32,
@@ -51,20 +50,16 @@ impl Model {
     }
 }
 
-pub fn preprocess<S>(
-    image: &ImageBuffer<Rgb<S>, Vec<S>>,
-    image_size: u32,
-) -> Result<(Array4<f32>, [u32; 4])>
+pub fn preprocess<I, S>(image: &I, image_size: u32) -> Result<(Array4<f32>, [u32; 4])>
 where
+    I: GenericImageView<Pixel = Rgb<S>>,
     Rgb<S>: Pixel<Subpixel = S>,
     S: Primitive + AsPrimitive<f32> + 'static,
 {
     let image = imageops::resize(image, image_size, image_size, FilterType::Lanczos3);
     let (w, h) = image.dimensions();
-    let (x, y) =
-        padding::to_position(w, h, image_size, image_size, &Position::Center).unwrap_or_default();
     let zero = S::zero();
-    let image = padding::square(&image, &Position::Center, Rgb([zero, zero, zero])).unwrap();
+    let (image, (x, y)) = image.padding_square(Rgb([zero, zero, zero]));
 
     let tensor = image.as_ndarray3().slice_move(s![NewAxis, ..;-1, .., ..]);
     let tensor = if is_floating_point::<S>() {
@@ -73,7 +68,7 @@ where
         tensor.map(|v| v.as_().div(get_max_value::<S>().as_()))
     };
 
-    Ok((tensor, [x as u32, y as u32, w, h]))
+    Ok((tensor, [x, y, w, h]))
 }
 
 pub fn postprocess_mask<S>(

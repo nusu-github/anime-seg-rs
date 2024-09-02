@@ -32,8 +32,7 @@ impl Config {
 fn check_format(s: &str) -> Result<String, String> {
     let supported: Vec<_> = ImageFormat::all()
         .filter(|f| f.writing_enabled())
-        .map(|f| f.extensions_str())
-        .flatten()
+        .flat_map(|f| f.extensions_str())
         .map(|s| format!("`{}`", s))
         .collect();
     let supported_message = format!("Supported formats: {}", supported.join(", "));

@@ -1,9 +1,12 @@
+mod alpha_mask_applicable;
 mod clip_minimum_border;
-pub mod convert_color;
-pub mod mask;
-pub mod padding;
+mod convert_color;
+mod padding;
 
-pub use clip_minimum_border::clip_minimum_border;
+pub use alpha_mask_applicable::AlphaMaskApplicable;
+pub use clip_minimum_border::ClipMinimumBorder;
+pub use convert_color::ConvertColor;
+pub use padding::Padding;
 
 use num_traits::{Bounded, NumCast};
 use std::any::TypeId;

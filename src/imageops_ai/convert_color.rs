@@ -3,16 +3,12 @@ use num_traits::AsPrimitive;
 
 use crate::imageops_ai::get_max_value;
 
-trait MargeAlpha<S>
-where
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
-{
+trait MargeAlpha {
     type Output;
     fn marge_alpha(&self) -> Self::Output;
 }
 
-impl<S> MargeAlpha<S> for ImageBuffer<LumaA<S>, Vec<S>>
+impl<S> MargeAlpha for ImageBuffer<LumaA<S>, Vec<S>>
 where
     LumaA<S>: Pixel<Subpixel = S>,
     Luma<S>: Pixel<Subpixel = S>,
@@ -26,16 +22,16 @@ where
         let mut img = ImageBuffer::new(self.width(), self.height());
         for (x, y, p) in self.enumerate_pixels() {
             let LumaA([l, a]) = p;
-            let l = l.as_();
-            let a = a.as_() / max;
-            let l = (l * a).as_();
-            img.put_pixel(x, y, Luma([l]));
+            let l_f32 = l.as_();
+            let a_f32 = a.as_() / max;
+            let merged = (l_f32 * a_f32).as_();
+            img.put_pixel(x, y, Luma([merged]));
         }
         img
     }
 }
 
-impl<S> MargeAlpha<S> for ImageBuffer<Rgba<S>, Vec<S>>
+impl<S> MargeAlpha for ImageBuffer<Rgba<S>, Vec<S>>
 where
     Rgba<S>: Pixel<Subpixel = S>,
     Rgb<S>: Pixel<Subpixel = S>,
@@ -49,122 +45,69 @@ where
         let mut img = ImageBuffer::new(self.width(), self.height());
         for (x, y, p) in self.enumerate_pixels() {
             let Rgba([r, g, b, a]) = p;
-            let r = r.as_();
-            let g = g.as_();
-            let b = b.as_();
-            let a = a.as_() / max;
-            let r = (r * a).as_();
-            let g = (g * a).as_();
-            let b = (b * a).as_();
-            img.put_pixel(x, y, Rgb([r, g, b]));
+            let a_f32 = a.as_() / max;
+            let merged = |channel: &S| (channel.as_() * a_f32).as_();
+            img.put_pixel(x, y, Rgb([merged(r), merged(g), merged(b)]));
         }
         img
     }
 }
 
-pub trait ConvertColor<S>
-where
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
-    Luma<S>: Pixel<Subpixel = S>,
-    LumaA<S>: Pixel<Subpixel = S>,
-    Rgb<S>: Pixel<Subpixel = S>,
-    Rgba<S>: Pixel<Subpixel = S>,
-{
-    fn to_luma(self) -> Option<ImageBuffer<Luma<S>, Vec<S>>>;
-    fn to_luma_alpha(self) -> Option<ImageBuffer<LumaA<S>, Vec<S>>>;
-    fn to_rgb(self) -> Option<ImageBuffer<Rgb<S>, Vec<S>>>;
-    fn to_rgba(self) -> Option<ImageBuffer<Rgba<S>, Vec<S>>>;
+pub trait ConvertColor {
+    type Output;
+    fn wrap_convert(self) -> Self::Output;
 }
 
-impl<S> ConvertColor<S> for ImageBuffer<Luma<S>, Vec<S>>
+impl<S> ConvertColor for ImageBuffer<Luma<S>, Vec<S>>
 where
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
+    S: Primitive + 'static,
     Luma<S>: Pixel<Subpixel = S>,
     LumaA<S>: Pixel<Subpixel = S>,
-    Rgb<S>: Pixel<Subpixel = S>,
-    Rgba<S>: Pixel<Subpixel = S>,
 {
-    fn to_luma(self) -> Option<ImageBuffer<Luma<S>, Vec<S>>> {
-        Some(self)
-    }
-    fn to_luma_alpha(self) -> Option<ImageBuffer<LumaA<S>, Vec<S>>> {
-        Some(self.convert())
-    }
-    fn to_rgb(self) -> Option<ImageBuffer<Rgb<S>, Vec<S>>> {
-        Some(self.convert())
-    }
-    fn to_rgba(self) -> Option<ImageBuffer<Rgba<S>, Vec<S>>> {
-        Some(self.convert())
+    type Output = ImageBuffer<LumaA<S>, Vec<S>>;
+
+    fn wrap_convert(self) -> Self::Output {
+        self.convert()
     }
 }
 
-impl<S> ConvertColor<S> for ImageBuffer<LumaA<S>, Vec<S>>
+impl<S> ConvertColor for ImageBuffer<LumaA<S>, Vec<S>>
 where
     S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
     Luma<S>: Pixel<Subpixel = S>,
     LumaA<S>: Pixel<Subpixel = S>,
-    Rgb<S>: Pixel<Subpixel = S>,
-    Rgba<S>: Pixel<Subpixel = S>,
+    f32: AsPrimitive<S>,
 {
-    fn to_luma(self) -> Option<ImageBuffer<Luma<S>, Vec<S>>> {
-        Some(self.marge_alpha())
-    }
-    fn to_luma_alpha(self) -> Option<ImageBuffer<LumaA<S>, Vec<S>>> {
-        Some(self)
-    }
-    fn to_rgb(self) -> Option<ImageBuffer<Rgb<S>, Vec<S>>> {
-        Some(self.marge_alpha().convert())
-    }
-    fn to_rgba(self) -> Option<ImageBuffer<Rgba<S>, Vec<S>>> {
-        Some(self.convert())
+    type Output = ImageBuffer<Luma<S>, Vec<S>>;
+
+    fn wrap_convert(self) -> Self::Output {
+        self.marge_alpha()
     }
 }
 
-impl<S> ConvertColor<S> for ImageBuffer<Rgb<S>, Vec<S>>
+impl<S> ConvertColor for ImageBuffer<Rgb<S>, Vec<S>>
 where
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
-    Luma<S>: Pixel<Subpixel = S>,
-    LumaA<S>: Pixel<Subpixel = S>,
+    S: Primitive + 'static,
     Rgb<S>: Pixel<Subpixel = S>,
     Rgba<S>: Pixel<Subpixel = S>,
 {
-    fn to_luma(self) -> Option<ImageBuffer<Luma<S>, Vec<S>>> {
-        None
-    }
-    fn to_luma_alpha(self) -> Option<ImageBuffer<LumaA<S>, Vec<S>>> {
-        None
-    }
-    fn to_rgb(self) -> Option<ImageBuffer<Rgb<S>, Vec<S>>> {
-        Some(self)
-    }
-    fn to_rgba(self) -> Option<ImageBuffer<Rgba<S>, Vec<S>>> {
-        Some(self.convert())
+    type Output = ImageBuffer<Rgba<S>, Vec<S>>;
+
+    fn wrap_convert(self) -> Self::Output {
+        self.convert()
     }
 }
 
-impl<S> ConvertColor<S> for ImageBuffer<Rgba<S>, Vec<S>>
+impl<S> ConvertColor for ImageBuffer<Rgba<S>, Vec<S>>
 where
     S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
-    Luma<S>: Pixel<Subpixel = S>,
-    LumaA<S>: Pixel<Subpixel = S>,
     Rgb<S>: Pixel<Subpixel = S>,
     Rgba<S>: Pixel<Subpixel = S>,
+    f32: AsPrimitive<S>,
 {
-    fn to_luma(self) -> Option<ImageBuffer<Luma<S>, Vec<S>>> {
-        None
-    }
-    fn to_luma_alpha(self) -> Option<ImageBuffer<LumaA<S>, Vec<S>>> {
-        None
-    }
-    fn to_rgb(self) -> Option<ImageBuffer<Rgb<S>, Vec<S>>> {
-        Some(self.marge_alpha())
-    }
-    fn to_rgba(self) -> Option<ImageBuffer<Rgba<S>, Vec<S>>> {
-        Some(self)
+    type Output = ImageBuffer<Rgb<S>, Vec<S>>;
+
+    fn wrap_convert(self) -> Self::Output {
+        self.marge_alpha()
     }
 }

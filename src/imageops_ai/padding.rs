@@ -1,4 +1,4 @@
-use image::{imageops, GenericImageView, ImageBuffer, Pixel, Primitive};
+use image::{imageops, ImageBuffer, Pixel, Primitive};
 use num_traits::AsPrimitive;
 
 #[allow(dead_code)]
@@ -14,13 +14,10 @@ pub enum Position {
     Center,
 }
 
-pub fn to_position(
-    width: u32,
-    height: u32,
-    pad_width: u32,
-    pad_height: u32,
-    position: &Position,
-) -> Option<(i64, i64)> {
+pub fn to_position(size: [u32; 2], pad_size: [u32; 2], position: &Position) -> Option<(i64, i64)> {
+    let [width, height] = size;
+    let [pad_width, pad_height] = pad_size;
+
     if width > pad_width || height > pad_height {
         return None;
     }
@@ -40,40 +37,69 @@ pub fn to_position(
     Some((x.as_(), y.as_()))
 }
 
-pub fn padding<I, P, S>(
-    image: &I,
-    pad_width: u32,
-    pad_height: u32,
-    position: &Position,
-    color: P,
-) -> Option<ImageBuffer<P, Vec<S>>>
+pub trait Padding<P, S>
 where
-    I: GenericImageView<Pixel = P>,
     P: Pixel<Subpixel = S>,
     S: Primitive,
 {
-    let (width, height) = image.dimensions();
+    fn padding(
+        self,
+        pad_size: [u32; 2],
+        position: &Position,
+        color: P,
+    ) -> (ImageBuffer<P, Vec<S>>, (u32, u32));
 
-    to_position(width, height, pad_width, pad_height, position).map(|(x, y)| {
-        let mut canvas = ImageBuffer::from_pixel(pad_width, pad_height, color);
-        imageops::overlay(&mut canvas, image, x, y);
-        canvas
-    })
+    fn padding_square(self, color: P) -> (ImageBuffer<P, Vec<S>>, (u32, u32));
+
+    fn to_position(&self, pad_size: [u32; 2], position: &Position) -> Option<(i64, i64)>;
+
+    fn to_position_square(&self) -> Option<((i64, i64), (u32, u32))>;
 }
 
-pub fn square<I, P, S>(image: &I, position: &Position, color: P) -> Option<ImageBuffer<P, Vec<S>>>
+impl<P, S> Padding<P, S> for ImageBuffer<P, Vec<S>>
 where
-    I: GenericImageView<Pixel = P>,
     P: Pixel<Subpixel = S>,
     S: Primitive,
 {
-    let (width, height) = image.dimensions();
+    fn padding(
+        self,
+        pad_size: [u32; 2],
+        position: &Position,
+        color: P,
+    ) -> (ImageBuffer<P, Vec<S>>, (u32, u32)) {
+        self.to_position(pad_size, position)
+            .map(|(x, y)| {
+                let mut canvas = ImageBuffer::from_pixel(pad_size[0], pad_size[1], color);
+                imageops::overlay(&mut canvas, &self, x, y);
+                (canvas, (x as u32, y as u32))
+            })
+            .unwrap_or_else(|| (self, (0, 0)))
+    }
 
-    let (pad_width, pad_height) = if width > height {
-        (width, width)
-    } else {
-        (height, height)
-    };
+    fn padding_square(self, color: P) -> (ImageBuffer<P, Vec<S>>, (u32, u32)) {
+        if let Some((_, pad_size)) = self.to_position_square() {
+            self.padding([pad_size.0, pad_size.1], &Position::Center, color)
+        } else {
+            (self, (0, 0))
+        }
+    }
 
-    padding(image, pad_width, pad_height, position, color)
+    fn to_position(&self, pad_size: [u32; 2], position: &Position) -> Option<(i64, i64)> {
+        let (width, height) = self.dimensions();
+
+        to_position([width, height], pad_size, position)
+    }
+
+    fn to_position_square(&self) -> Option<((i64, i64), (u32, u32))> {
+        let (width, height) = self.dimensions();
+
+        let (pad_width, pad_height) = if width > height {
+            (width, width)
+        } else {
+            (height, height)
+        };
+
+        self.to_position([pad_width, pad_height], &Position::Center)
+            .map(|(x, y)| ((x, y), (pad_width, pad_height)))
+    }
 }
