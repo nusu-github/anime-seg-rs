@@ -5,13 +5,17 @@ use std::{
 };
 
 use anyhow::{ensure, Result};
-use image::{buffer::ConvertBuffer, DynamicImage, ImageFormat, RgbaImage};
+use image::{
+    buffer::ConvertBuffer, DynamicImage, ImageBuffer, ImageFormat, Luma, Pixel, Primitive, Rgb,
+    RgbImage, Rgba, RgbaImage,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use num_traits::AsPrimitive;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::config::Config;
-use crate::imageops_ai::{clip_minimum_border, mask::apply};
+use crate::imageops_ai::{clip_minimum_border, convert_color::ConvertColor, mask::apply};
 use crate::model::{postprocess_mask, preprocess, Model};
 
 mod config;
@@ -66,23 +70,59 @@ impl ImageProcessor {
 
     fn process_single_image(&self, path: &Path) -> Result<()> {
         let image = image::open(path)?;
-        let processed_image = self.process_image(image)?;
+        let processed_image = match image {
+            DynamicImage::ImageLuma8(img) => {
+                let img: RgbImage = img.convert();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageLumaA8(img) => {
+                let img = img.to_rgb().unwrap();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageRgb8(img) => self.process_image(img)?,
+            DynamicImage::ImageRgba8(img) => {
+                let img = img.to_rgb().unwrap();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageLuma16(img) => {
+                let img: RgbImage = img.convert();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageLumaA16(img) => {
+                let img = img.to_rgb().unwrap();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageRgb16(img) => self.process_image(img)?,
+            DynamicImage::ImageRgba16(img) => {
+                let img = img.to_rgb().unwrap();
+                self.process_image(img)?
+            }
+            DynamicImage::ImageRgb32F(img) => self.process_image(img)?,
+            DynamicImage::ImageRgba32F(img) => {
+                let img = img.to_rgb().unwrap();
+                self.process_image(img)?
+            }
+            _ => return Err(anyhow::anyhow!("Unsupported image format")),
+        };
         self.save_image(path, &processed_image)
     }
 
-    fn process_image(&self, image: DynamicImage) -> Result<DynamicImage> {
-        let image = image.into_rgb8();
+    fn process_image<S>(&self, image: ImageBuffer<Rgb<S>, Vec<S>>) -> Result<DynamicImage>
+    where
+        Rgb<S>: Pixel<Subpixel = S>,
+        Rgba<S>: Pixel<Subpixel = S>,
+        Luma<S>: Pixel<Subpixel = S>,
+        S: Primitive + AsPrimitive<f32> + 'static,
+        f32: AsPrimitive<S>,
+        DynamicImage: From<ImageBuffer<Rgba<S>, Vec<S>>>,
+    {
         let (tensor, crop) = preprocess(&image, self.model.image_size)?;
         let mask = self.model.predict(tensor.view())?;
         let (width, height) = image.dimensions();
         let mask = postprocess_mask(mask, self.model.image_size, crop, width, height);
-        let image = apply(&image, &mask, true)?;
+        let image = apply::<S, f32>(&image, &mask)?;
         let image = clip_minimum_border(image, 1, 32);
-        if self.alpha_channel {
-            Ok(DynamicImage::ImageRgba8(image))
-        } else {
-            Ok(DynamicImage::ImageRgb8(image.convert()))
-        }
+        Ok(DynamicImage::from(image))
     }
 
     fn save_image(&self, input_path: &Path, image: &DynamicImage) -> Result<()> {
@@ -94,6 +134,15 @@ impl ImageProcessor {
             .with_extension(&self.config.format);
 
         std::fs::create_dir_all(output_path.parent().unwrap())?;
+
+        let image = if self.alpha_channel {
+            let image = image.to_rgba8();
+            DynamicImage::ImageRgba8(image)
+        } else {
+            let image = image.to_rgba8().to_rgb().unwrap();
+            DynamicImage::ImageRgb8(image)
+        };
+
         image
             .save(&output_path)
             .map_err(|e| anyhow::anyhow!("Failed to save image: {}", e))

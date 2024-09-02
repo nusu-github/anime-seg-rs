@@ -1,12 +1,17 @@
+use std::ops::Div;
 use std::path::Path;
 
-use anyhow::Result;
-use image::{imageops, imageops::FilterType, GenericImageView, ImageBuffer, Luma, Rgb, RgbImage};
-use ndarray::prelude::*;
-use ort::{CUDAExecutionProvider, Session, SessionBuilder};
-
 use crate::imageops_ai::padding::{self, Position};
+use crate::imageops_ai::{get_max_value, is_floating_point};
 use crate::semaphore::Semaphore;
+use anyhow::Result;
+use image::{
+    imageops, imageops::FilterType, GenericImageView, ImageBuffer, Luma, Pixel, Primitive, Rgb,
+};
+use ndarray::prelude::*;
+use nshare::AsNdarray3;
+use num_traits::AsPrimitive;
+use ort::{CUDAExecutionProvider, Session, SessionBuilder};
 
 pub struct Model {
     pub image_size: u32,
@@ -36,41 +41,54 @@ impl Model {
         })
     }
 
-    pub fn predict(&self, tensor: ArrayView4<f32>) -> Result<Vec<f32>> {
+    pub fn predict(&self, tensor: ArrayView4<f32>) -> Result<Array4<f32>> {
         let _guard = self.semaphore.acquire();
         let outputs = self.session.run(ort::inputs!["img" => tensor]?)?;
-        Ok(outputs["mask"].try_extract_raw_tensor::<f32>()?.1.to_vec())
+        Ok(outputs["mask"]
+            .try_extract_tensor::<f32>()?
+            .into_dimensionality::<Ix4>()?
+            .to_owned())
     }
 }
 
-pub fn preprocess(image: &RgbImage, image_size: u32) -> Result<(Array4<f32>, [u32; 4])> {
+pub fn preprocess<S>(
+    image: &ImageBuffer<Rgb<S>, Vec<S>>,
+    image_size: u32,
+) -> Result<(Array4<f32>, [u32; 4])>
+where
+    Rgb<S>: Pixel<Subpixel = S>,
+    S: Primitive + AsPrimitive<f32> + 'static,
+{
     let image = imageops::resize(image, image_size, image_size, FilterType::Lanczos3);
     let (w, h) = image.dimensions();
     let (x, y) =
         padding::to_position(w, h, image_size, image_size, &Position::Center).unwrap_or_default();
-    let image = padding::square(&image, &Position::Center, Rgb([0, 0, 0])).unwrap();
+    let zero = S::zero();
+    let image = padding::square(&image, &Position::Center, Rgb([zero, zero, zero])).unwrap();
 
-    let tensor = Array3::from_shape_vec(
-        (image_size as usize, image_size as usize, 3),
-        image.into_raw(),
-    )?
-    .mapv(|v| v as f32 / 255.0)
-    .permuted_axes([2, 0, 1])
-    .slice(s![NewAxis, .., .., ..])
-    .to_owned();
+    let tensor = image.as_ndarray3().slice_move(s![NewAxis, ..;-1, .., ..]);
+    let tensor = if is_floating_point::<S>() {
+        tensor.map(|v| v.as_())
+    } else {
+        tensor.map(|v| v.as_().div(get_max_value::<S>().as_()))
+    };
 
     Ok((tensor, [x as u32, y as u32, w, h]))
 }
 
-pub fn postprocess_mask(
-    mask: Vec<f32>,
+pub fn postprocess_mask<S>(
+    mask: Array4<S>,
     image_size: u32,
     crop: [u32; 4],
     width: u32,
     height: u32,
-) -> ImageBuffer<Luma<f32>, Vec<f32>> {
+) -> ImageBuffer<Luma<S>, Vec<S>>
+where
+    S: Primitive + 'static,
+{
     let [x, y, w, h] = crop;
-    let mask = ImageBuffer::from_raw(image_size, image_size, mask).unwrap();
+    let mask =
+        ImageBuffer::from_raw(image_size, image_size, mask.into_raw_vec_and_offset().0).unwrap();
     let mask = mask.view(x, y, w, h).to_image();
     imageops::resize(&mask, width, height, FilterType::Lanczos3)
 }

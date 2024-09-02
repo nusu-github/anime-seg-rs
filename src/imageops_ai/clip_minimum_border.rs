@@ -1,5 +1,5 @@
 use crate::imageops_ai::get_max_value;
-use image::{GenericImageView, ImageBuffer, Luma, Pixel, Primitive};
+use image::{GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Primitive};
 use num_traits::{AsPrimitive, ToPrimitive};
 use std::ops::{Div, Mul};
 
@@ -10,7 +10,7 @@ pub fn clip_minimum_border<P, S>(
 ) -> ImageBuffer<P, Vec<S>>
 where
     P: Pixel<Subpixel = S> + 'static,
-    S: Primitive + 'static + AsPrimitive<f32>,
+    S: Primitive + AsPrimitive<f32> + 'static,
     f32: AsPrimitive<S>,
 {
     for i in 0..iterations {
@@ -27,31 +27,49 @@ where
     image
 }
 
+fn marge_alpha<S>(image: LumaA<S>) -> Luma<S>
+where
+    LumaA<S>: Pixel<Subpixel = S>,
+    Luma<S>: Pixel<Subpixel = S>,
+    S: Primitive + AsPrimitive<f32> + 'static,
+    f32: AsPrimitive<S>,
+{
+    let max = get_max_value::<S>().as_();
+    let LumaA([l, a]) = image;
+    let l = l.as_();
+    let a = a.as_() / max;
+    let l = (l * a).as_();
+    Luma([l])
+}
+
 fn extract_corners<I, P, S>(image: &I) -> Vec<Luma<S>>
 where
     I: GenericImageView<Pixel = P>,
     P: Pixel<Subpixel = S>,
     Luma<S>: Pixel<Subpixel = S>,
-    S: Primitive,
+    S: Primitive + AsPrimitive<f32> + 'static,
+    f32: AsPrimitive<S>,
 {
     let (width, height) = image.dimensions();
     vec![
-        image.get_pixel(0, 0).to_luma(),
-        image.get_pixel(width.saturating_sub(1), 0).to_luma(),
-        image.get_pixel(0, height.saturating_sub(1)).to_luma(),
-        image
-            .get_pixel(width.saturating_sub(1), height.saturating_sub(1))
-            .to_luma(),
+        marge_alpha(image.get_pixel(0, 0).to_luma_alpha()),
+        marge_alpha(image.get_pixel(width.saturating_sub(1), 0).to_luma_alpha()),
+        marge_alpha(image.get_pixel(0, height.saturating_sub(1)).to_luma_alpha()),
+        marge_alpha(
+            image
+                .get_pixel(width.saturating_sub(1), height.saturating_sub(1))
+                .to_luma_alpha(),
+        ),
     ]
 }
 
 fn clip_image<P, S>(image: &ImageBuffer<P, Vec<S>>, background: &Luma<S>, threshold: u8) -> [u32; 4]
 where
     P: Pixel<Subpixel = S>,
-    S: Primitive + AsPrimitive<f32>,
+    S: Primitive + AsPrimitive<f32> + 'static,
     f32: AsPrimitive<S>,
 {
-    let max: f32 = get_max_value::<S>();
+    let max = get_max_value::<S>().as_();
     let (width, height) = image.dimensions();
     let mut x1 = width;
     let mut y1 = height;
@@ -59,7 +77,7 @@ where
     let mut y2 = 0;
 
     for (x, y, pixel) in image.enumerate_pixels() {
-        let diff = pixel.to_luma()[0]
+        let diff = marge_alpha(pixel.to_luma_alpha())[0]
             .as_()
             .div(max)
             .mul(255.0)
