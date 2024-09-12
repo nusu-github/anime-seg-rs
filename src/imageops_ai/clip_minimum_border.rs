@@ -1,7 +1,7 @@
-use crate::imageops_ai::get_max_value;
-use image::{GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Primitive};
-use num_traits::{AsPrimitive, ToPrimitive};
 use std::ops::{Div, Mul};
+
+use image::{GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Primitive};
+use num_traits::ToPrimitive;
 
 pub trait ClipMinimumBorder {
     fn clip_minimum_border(self, iterations: usize, threshold: u8) -> Self;
@@ -10,8 +10,7 @@ pub trait ClipMinimumBorder {
 impl<P, S> ClipMinimumBorder for ImageBuffer<P, Vec<S>>
 where
     P: Pixel<Subpixel = S> + 'static,
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
+    S: Primitive + 'static,
 {
     fn clip_minimum_border(mut self, iterations: usize, threshold: u8) -> Self {
         for i in 0..iterations {
@@ -29,26 +28,20 @@ where
     }
 }
 
-trait ImageProcessing<P, S>
-where
-    P: Pixel<Subpixel = S>,
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
-{
-    fn extract_corners(&self) -> Vec<Luma<S>>;
-    fn find_content_bounds(&self, background: &Luma<S>, threshold: u8) -> [u32; 4];
-    fn calculate_pixel_difference(&self, pixel: &P, background: &Luma<S>, max: f32) -> u8;
+trait ImageProcessing<P: Pixel> {
+    fn extract_corners(&self) -> [Luma<P::Subpixel>; 4];
+    fn find_content_bounds(&self, background: &Luma<P::Subpixel>, threshold: u8) -> [u32; 4];
+    fn calculate_pixel_difference(&self, pixel: &P, background: &Luma<P::Subpixel>, max: f32)
+        -> u8;
 }
 
-impl<P, S> ImageProcessing<P, S> for ImageBuffer<P, Vec<S>>
+impl<P: Pixel> ImageProcessing<P> for ImageBuffer<P, Vec<P::Subpixel>>
 where
-    P: Pixel<Subpixel = S>,
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
+    <P as Pixel>::Subpixel: 'static,
 {
-    fn extract_corners(&self) -> Vec<Luma<S>> {
+    fn extract_corners(&self) -> [Luma<P::Subpixel>; 4] {
         let (width, height) = self.dimensions();
-        vec![
+        [
             merge_alpha(self.get_pixel(0, 0).to_luma_alpha()),
             merge_alpha(self.get_pixel(width.saturating_sub(1), 0).to_luma_alpha()),
             merge_alpha(self.get_pixel(0, height.saturating_sub(1)).to_luma_alpha()),
@@ -59,8 +52,8 @@ where
         ]
     }
 
-    fn find_content_bounds(&self, background: &Luma<S>, threshold: u8) -> [u32; 4] {
-        let max = get_max_value::<S>().as_();
+    fn find_content_bounds(&self, background: &Luma<P::Subpixel>, threshold: u8) -> [u32; 4] {
+        let max = P::Subpixel::DEFAULT_MAX_VALUE.to_f32().unwrap();
         let (width, height) = self.dimensions();
         let mut bounds = [width, height, 0, 0]; // [x1, y1, x2, y2]
 
@@ -79,12 +72,18 @@ where
         ]
     }
 
-    fn calculate_pixel_difference(&self, pixel: &P, background: &Luma<S>, max: f32) -> u8 {
+    fn calculate_pixel_difference(
+        &self,
+        pixel: &P,
+        background: &Luma<P::Subpixel>,
+        max: f32,
+    ) -> u8 {
         let pixel_value = merge_alpha(pixel.to_luma_alpha())[0]
-            .as_()
+            .to_f32()
+            .unwrap()
             .div(max)
             .mul(255.0);
-        let background_value = background[0].as_().div(max).mul(255.0);
+        let background_value = background[0].to_f32().unwrap().div(max).mul(255.0);
         pixel_value
             .to_u8()
             .unwrap()
@@ -96,15 +95,17 @@ fn merge_alpha<S>(image: LumaA<S>) -> Luma<S>
 where
     LumaA<S>: Pixel<Subpixel = S>,
     Luma<S>: Pixel<Subpixel = S>,
-    S: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<S>,
+    S: Primitive + 'static,
 {
-    let max = get_max_value::<S>().as_();
-    let LumaA([l, a]) = image;
-    let l = l.as_();
-    let a = a.as_() / max;
-    let l = (l * a).as_();
-    Luma([l])
+    unsafe {
+        // SAFETY: u8,u16,f32 to f32 is safe
+        let max = S::DEFAULT_MAX_VALUE.to_f32().unwrap_unchecked();
+        let LumaA([l, a]) = image;
+        let l = l.to_f32().unwrap_unchecked();
+        let a = a.to_f32().unwrap_unchecked() / max;
+        let l = S::from(l * a).unwrap_unchecked();
+        Luma([l])
+    }
 }
 
 fn update_bounds(bounds: &mut [u32; 4], x: u32, y: u32) {

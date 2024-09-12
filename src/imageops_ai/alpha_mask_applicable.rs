@@ -1,56 +1,46 @@
 use anyhow::{anyhow, ensure, Result};
-use image::{ImageBuffer, Luma, Pixel, Primitive, Rgb, Rgba};
-use num_traits::AsPrimitive;
+use image::{GenericImageView, ImageBuffer, Luma, Pixel, Primitive, Rgb, Rgba};
 
-use crate::imageops_ai::get_max_value;
-
-pub trait AlphaMaskApplicable<SI>
+pub trait AlphaMaskImage<S>
 where
-    SI: Primitive + AsPrimitive<f32> + 'static,
+    Rgba<S>: Pixel<Subpixel = S>,
+    S: Primitive + 'static,
 {
-    fn apply_alpha_mask<SM>(
-        self,
-        mask: &ImageBuffer<Luma<SM>, Vec<SM>>,
-    ) -> Result<ImageBuffer<Rgba<SI>, Vec<SI>>>
+    fn add_alpha_mask<I, SM>(&self, mask: &I) -> Result<ImageBuffer<Rgba<S>, Vec<S>>>
     where
-        Rgba<SI>: Pixel<Subpixel = SI>,
-        SM: Primitive + AsPrimitive<f32> + 'static,
-        f32: AsPrimitive<SM>;
+        I: GenericImageView<Pixel = Luma<SM>>,
+        SM: Primitive + 'static;
 }
 
-impl<SI> AlphaMaskApplicable<SI> for ImageBuffer<Rgb<SI>, Vec<SI>>
+impl<S> AlphaMaskImage<S> for ImageBuffer<Rgb<S>, Vec<S>>
 where
-    Rgb<SI>: Pixel<Subpixel = SI>,
-    SI: Primitive + AsPrimitive<f32> + 'static,
-    f32: AsPrimitive<SI>,
+    Rgb<S>: Pixel<Subpixel = S>,
+    Rgba<S>: Pixel<Subpixel = S>,
+    S: Primitive + 'static,
 {
-    fn apply_alpha_mask<SM>(
-        self,
-        mask: &ImageBuffer<Luma<SM>, Vec<SM>>,
-    ) -> Result<ImageBuffer<Rgba<SI>, Vec<SI>>>
+    fn add_alpha_mask<I, SM>(&self, mask: &I) -> Result<ImageBuffer<Rgba<S>, Vec<S>>>
     where
-        Rgba<SI>: Pixel<Subpixel = SI>,
-        SM: Primitive + AsPrimitive<f32> + 'static,
-        f32: AsPrimitive<SM>,
+        I: GenericImageView<Pixel = Luma<SM>>,
+        SM: Primitive + 'static,
     {
         ensure!(
             self.dimensions() == mask.dimensions(),
             "Image and mask dimensions do not match"
         );
 
-        let si_max = get_max_value::<SI>().as_();
-        let sm_max = get_max_value::<SM>().as_();
+        let si_max = S::DEFAULT_MAX_VALUE.to_f32().unwrap();
+        let sm_max = SM::DEFAULT_MAX_VALUE.to_f32().unwrap();
 
         let processed_pixels = self
             .pixels()
             .zip(mask.pixels())
-            .flat_map(|(&image_pixel, &mask_pixel)| {
+            .flat_map(|(&image_pixel, mask_pixel)| {
                 let Rgb([red, green, blue]) = image_pixel;
-                let Luma([alpha]) = mask_pixel;
-                let alpha = (alpha.as_() / sm_max * si_max).as_();
-                vec![red, green, blue, alpha]
+                let Luma([alpha]) = mask_pixel.2;
+                let alpha = S::from(alpha.to_f32().unwrap() / sm_max * si_max).unwrap();
+                [red, green, blue, alpha]
             })
-            .collect::<Vec<SI>>();
+            .collect();
 
         ImageBuffer::from_raw(self.width(), self.height(), processed_pixels)
             .ok_or_else(|| anyhow!("Failed to create ImageBuffer from processed pixels"))

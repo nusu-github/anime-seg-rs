@@ -15,17 +15,19 @@ default = []
 cuda = ["ort/cuda"]
 
 [dependencies]
-anyhow = "^1.0.86"
-clap = { version = "^4.5.16", features = ["derive"] }
-image = { version = "^0.25.2", default-features = false, features = ["jpeg", "png", "webp"] }
+anyhow = "^1.0.88"
+clap = { version = "^4.5.17", features = ["derive"] }
+image = "^0.25.2"
 indicatif = "^0.17.8"
 ndarray = "^0.16.1"
-nshare = { version = "0.10.0", default-features = false, features = ["image", "ndarray"] }
+nshare = { version = "^0.10.0", default-features = false, features = ["image", "ndarray"] }
 num-traits = "^0.2.19"
-ort = { version = "2.0.0-rc.5", features = ["load-dynamic"] }
+ort = "2.0.0-rc.6"
 parking_lot = { version = "^0.12.3", features = ["hardware-lock-elision"] }
 rayon = "^1.10.0"
 walkdir = "^2.5.0"
 
 [profile.release]
-lto = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"

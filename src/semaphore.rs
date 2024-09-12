@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{ops::AddAssign, sync::Arc};
 
 use parking_lot::{Condvar, Mutex};
 
-pub struct Semaphore {
+pub(super) struct Semaphore {
     state: Arc<SemaphoreState>,
 }
 
@@ -11,12 +11,12 @@ struct SemaphoreState {
     condition: Condvar,
 }
 
-pub struct SemaphoreGuard {
+pub(super) struct Guard {
     state: Arc<SemaphoreState>,
 }
 
 impl Semaphore {
-    pub fn new(permits: usize) -> Self {
+    pub(super) fn new(permits: usize) -> Self {
         Self {
             state: Arc::new(SemaphoreState {
                 count: Mutex::new(permits),
@@ -25,25 +25,26 @@ impl Semaphore {
         }
     }
 
-    pub fn acquire(&self) -> SemaphoreGuard {
-        let mut count = self.state.count.lock();
-        self.state.condition.wait_while(&mut count, |&mut c| c == 0);
-        *count -= 1;
-        SemaphoreGuard {
+    pub(super) fn acquire(&self) -> Guard {
+        {
+            let mut count = self.state.count.lock();
+            self.state.condition.wait_while(&mut count, |&mut c| c == 0);
+            *count -= 1;
+        }
+        Guard {
             state: self.state.clone(),
         }
     }
 }
 
-impl SemaphoreGuard {
+impl Guard {
     fn release(&self) {
-        let mut count = self.state.count.lock();
-        *count += 1;
+        self.state.count.lock().add_assign(1);
         self.state.condition.notify_one();
     }
 }
 
-impl Drop for SemaphoreGuard {
+impl Drop for Guard {
     fn drop(&mut self) {
         self.release();
     }

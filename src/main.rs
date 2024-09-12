@@ -6,17 +6,18 @@ use std::{
 
 use anyhow::{ensure, Result};
 use image::{
-    buffer::ConvertBuffer, DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Pixel,
-    Primitive, Rgb, RgbImage, Rgba, RgbaImage,
+    buffer::ConvertBuffer, DynamicImage, ImageBuffer, ImageFormat, Pixel, Primitive, Rgb, RgbImage,
+    Rgba, RgbaImage,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use num_traits::AsPrimitive;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use crate::config::Config;
-use crate::imageops_ai::{AlphaMaskApplicable, ClipMinimumBorder, ConvertColor};
-use crate::model::{postprocess_mask, preprocess, Model};
+use {
+    config::Config,
+    imageops_ai::{AlphaMaskImage, ClipMinimumBorder, MargeAlpha},
+    model::{postprocess_mask, preprocess, Model},
+};
 
 mod config;
 mod imageops_ai;
@@ -70,54 +71,52 @@ impl ImageProcessor {
         let processed_image = match image {
             DynamicImage::ImageLuma8(img) => {
                 let img: RgbImage = img.convert();
-                self.process_image(img)?
+                self.process_image(&img)?
             }
             DynamicImage::ImageLumaA8(img) => {
-                let img: ImageBuffer<Rgb<u8>, Vec<u8>> = img.wrap_convert().convert();
-                self.process_image(img)?
+                let img: ImageBuffer<Rgb<u8>, Vec<u8>> = img.marge_alpha().convert();
+                self.process_image(&img)?
             }
-            DynamicImage::ImageRgb8(img) => self.process_image(img)?,
+            DynamicImage::ImageRgb8(img) => self.process_image(&img)?,
             DynamicImage::ImageRgba8(img) => {
-                let img = img.wrap_convert();
-                self.process_image(img)?
+                let img = img.marge_alpha();
+                self.process_image(&img)?
             }
             DynamicImage::ImageLuma16(img) => {
                 let img: RgbImage = img.convert();
-                self.process_image(img)?
+                self.process_image(&img)?
             }
             DynamicImage::ImageLumaA16(img) => {
-                let img: ImageBuffer<Rgb<u16>, Vec<u16>> = img.wrap_convert().convert();
-                self.process_image(img)?
+                let img: ImageBuffer<Rgb<u16>, Vec<u16>> = img.marge_alpha().convert();
+                self.process_image(&img)?
             }
-            DynamicImage::ImageRgb16(img) => self.process_image(img)?,
+            DynamicImage::ImageRgb16(img) => self.process_image(&img)?,
             DynamicImage::ImageRgba16(img) => {
-                let img = img.wrap_convert();
-                self.process_image(img)?
+                let img = img.marge_alpha();
+                self.process_image(&img)?
             }
-            DynamicImage::ImageRgb32F(img) => self.process_image(img)?,
+            DynamicImage::ImageRgb32F(img) => self.process_image(&img)?,
             DynamicImage::ImageRgba32F(img) => {
-                let img = img.wrap_convert();
-                self.process_image(img)?
+                let img = img.marge_alpha();
+                self.process_image(&img)?
             }
             _ => return Err(anyhow::anyhow!("Unsupported image format")),
         };
         self.save_image(path, processed_image)
     }
 
-    fn process_image<I, S>(&self, image: I) -> Result<DynamicImage>
+    fn process_image<S>(&self, image: &ImageBuffer<Rgb<S>, Vec<S>>) -> Result<DynamicImage>
     where
-        I: GenericImageView<Pixel = Rgb<S>> + AlphaMaskApplicable<S>,
-        Rgb<S>: Pixel<Subpixel = S>,
         Rgba<S>: Pixel<Subpixel = S>,
-        S: Primitive + AsPrimitive<f32> + 'static,
-        f32: AsPrimitive<S>,
+        Rgb<S>: Pixel<Subpixel = S>,
+        S: Primitive + 'static,
         DynamicImage: From<ImageBuffer<Rgba<S>, Vec<S>>>,
     {
-        let (tensor, crop) = preprocess(&image, self.model.image_size)?;
+        let (tensor, crop) = preprocess(image, self.model.image_size);
         let mask = self.model.predict(tensor.view())?;
         let (width, height) = image.dimensions();
         let mask = postprocess_mask(mask, self.model.image_size, crop, width, height);
-        let image = image.apply_alpha_mask::<f32>(&mask)?;
+        let image = image.add_alpha_mask(&mask)?;
         let image = image.clip_minimum_border(1, 8);
         Ok(DynamicImage::from(image))
     }
@@ -136,7 +135,7 @@ impl ImageProcessor {
             let image = image.into_rgba8();
             DynamicImage::ImageRgba8(image)
         } else {
-            let image = image.into_rgba8().wrap_convert();
+            let image = image.into_rgba8().marge_alpha();
             DynamicImage::ImageRgb8(image)
         };
 
