@@ -6,7 +6,7 @@ use image::{
 };
 use ndarray::prelude::*;
 use nshare::AsNdarray3;
-use ort::{CUDAExecutionProvider, Session, SessionBuilder};
+use ort::{CUDAExecutionProvider, Session, SessionBuilder, TensorRTExecutionProvider};
 
 use super::{imageops_ai::Padding, semaphore::Semaphore};
 
@@ -19,9 +19,14 @@ pub(super) struct Model {
 impl Model {
     pub(super) fn new(model_path: &Path, device_id: i32, batch_size: usize) -> Result<Self> {
         let session = SessionBuilder::new()?
-            .with_execution_providers([CUDAExecutionProvider::default()
-                .with_device_id(device_id)
-                .build()])?
+            .with_execution_providers([
+                TensorRTExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build(),
+                CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build(),
+            ])?
             .with_memory_pattern(true)?
             .commit_from_file(model_path)?;
 

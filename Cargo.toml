@@ -11,13 +11,22 @@ categories = ["command-line-utilities"]
 keywords = ["anime", "segmentation", "image-segmentation", "deep-learning", "pytorch"]
 
 [features]
-default = []
+default = ["image"]
+
+# ort execution providers
 cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+
+# image processing
+image = ["image/jpeg", "image/png", "image/webp"]
+image-extra = ["image/bmp", "image/gif", "image/tiff"]
+## The reason for separating avif is that the binary size becomes too large to ignore.
+image-avif = ["image/avif"]
 
 [dependencies]
 anyhow = "^1.0.88"
 clap = { version = "^4.5.17", features = ["derive"] }
-image = "^0.25.2"
+image = { version = "^0.25.2", default-features = false }
 indicatif = "^0.17.8"
 ndarray = "^0.16.1"
 nshare = { version = "^0.10.0", default-features = false, features = ["image", "ndarray"] }
