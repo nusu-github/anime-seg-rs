@@ -25,13 +25,13 @@ image-avif = ["image/avif"]
 
 [dependencies]
 anyhow = "1"
-clap = { version = "^4.5.20", features = ["derive"] }
-image = { version = "^0.25.4", default-features = false }
-indicatif = "^0.17.8"
+clap = { version = "^4.5.21", features = ["derive"] }
+image = { version = "^0.25.5", default-features = false }
+indicatif = "^0.17.9"
 ndarray = "^0.16.1"
 nshare = { version = "^0.10.0", default-features = false, features = ["image", "ndarray"] }
 num-traits = "^0.2.19"
-ort = "2.0.0-rc.8"
+ort = "2.0.0-rc.9"
 parking_lot = { version = "^0.12.3", features = ["hardware-lock-elision"] }
 rayon = "^1.10.0"
 walkdir = "^2.5.0"

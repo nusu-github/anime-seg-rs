@@ -6,7 +6,10 @@ use image::{
 };
 use ndarray::prelude::*;
 use nshare::AsNdarray3;
-use ort::{CUDAExecutionProvider, Session, SessionBuilder, TensorRTExecutionProvider};
+use ort::{
+    execution_providers::{CUDAExecutionProvider, TensorRTExecutionProvider},
+    session::{builder::SessionBuilder, Session},
+};
 
 use super::{imageops_ai::Padding, semaphore::Semaphore};
 
