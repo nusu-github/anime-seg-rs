@@ -30,6 +30,22 @@ jobs:
             compress_command: tar -czvf
 
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6 GB
+          tool-cache: false
+
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -45,11 +61,8 @@ jobs:
         uses: Jimver/cuda-toolkit@master
         id: cuda-toolkit
         with:
-          cuda: '12.4.1'
           method: 'network'
-          sub-packages: '["nvcc"]'
-          non-cuda-sub-packages: '["cudnn9-cuda"]'
-          log-file-suffix: '${{matrix.os}}.txt'
+          non-cuda-sub-packages: '["libcudnn", "nvcc"]'
 
       - name: Build Release Binaries
         run: cargo build --release  --locked --features cuda,image,image-extra
