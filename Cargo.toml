@@ -37,7 +37,7 @@ clap = { version = "4.5.40", features = ["derive"] }
 image = { version = "0.25", default-features = false }
 imageops-ai = { git = "https://github.com/nusu-github/imageops-ai", version = "0.1.0" }
 imageproc = { version = "0.25", default-features = false }
-indicatif = "0.17.12"
+indicatif = "0.18.0"
 ndarray = "0.16"
 nshare = { version = "0.10", default-features = false, features = ["image", "ndarray"] }
 ort = "2.0.0-rc.10"
