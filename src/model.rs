@@ -11,7 +11,6 @@ use image::{
 use imageops_kit::{AlphaMaskError, Image, ModifyAlphaExt, NormalizedFrom, PaddingExt};
 use imageproc::map::map_colors;
 use ndarray::prelude::*;
-use nshare::AsNdarray3;
 use ort::value::TensorRef;
 use ort::{
     execution_providers::{
@@ -102,10 +101,7 @@ impl Model {
             })?
             .with_optimized_model_path(cache_dir.join(format!(
                 "{}.optimized.onnx",
-                model_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
+                model_path.file_stem().unwrap_or_default().to_string_lossy()
             )))
             .map_err(|e| AnimeSegError::Model {
                 operation: "optimized model path configuration".to_string(),
@@ -215,7 +211,12 @@ impl crate::traits::BatchImageSegmentationModel for Model {
             dimensions.push(img.dimensions());
         }
 
-        let batch_shape = (batch_size, 3, self.image_size as usize, self.image_size as usize);
+        let batch_shape = (
+            batch_size,
+            3,
+            self.image_size as usize,
+            self.image_size as usize,
+        );
         let mut batch_tensor = Array4::<f32>::zeros(batch_shape);
 
         for (i, tensor) in batch_tensors.iter().enumerate() {
@@ -260,15 +261,27 @@ where
     let image = imageops::resize(image, image_size, image_size, FilterType::Lanczos3);
     let (w, h) = image.dimensions();
     let zero = S::zero();
-    let (image, (x, y)) = image
-        .to_square(Rgb([zero, zero, zero]))
+    let (image, (x, y)) =
+        image
+            .to_square(Rgb([zero, zero, zero]))
+            .map_err(|e| AnimeSegError::ImageProcessing {
+                path: "unknown".to_string(),
+                operation: "パディング追加".to_string(),
+                source: Box::new(e),
+            })?;
+
+    let (width, height) = image.dimensions();
+    let channels = 3;
+    let raw = image.into_raw();
+
+    let array_hwc = Array3::from_shape_vec((height as usize, width as usize, channels), raw)
         .map_err(|e| AnimeSegError::ImageProcessing {
             path: "unknown".to_string(),
-            operation: "パディング追加".to_string(),
+            operation: "Converting an image to an ndarray".to_string(),
             source: Box::new(e),
         })?;
+    let tensor = array_hwc.permuted_axes([2, 0, 1]).insert_axis(Axis(0));
 
-    let tensor = image.as_ndarray3().slice_move(s![NewAxis, ..;-1, .., ..]);
     let max = S::DEFAULT_MAX_VALUE.into();
     let tensor = if max == (<f32 as Primitive>::DEFAULT_MAX_VALUE) {
         tensor.map(|v| (*v).into())

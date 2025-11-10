@@ -55,7 +55,6 @@ dependencies = [
  "imageproc",
  "indicatif",
  "ndarray",
- "nshare",
  "ort",
  "parking_lot",
  "rayon",
@@ -822,7 +821,7 @@ dependencies = [
  "getrandom 0.2.16",
  "image",
  "itertools 0.12.1",
- "nalgebra 0.32.6",
+ "nalgebra",
  "num",
  "rand",
  "rand_distr",
@@ -1060,21 +1059,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
- "simba 0.8.1",
- "typenum",
-]
-
-[[package]]
-name = "nalgebra"
-version = "0.33.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26aecdf64b707efd1310e3544d709c5c0ac61c13756046aaaba41be5c4f66a3b"
-dependencies = [
- "approx",
- "num-complex",
- "num-rational",
- "num-traits",
- "simba 0.9.1",
+ "simba",
  "typenum",
 ]
 
@@ -1138,17 +1123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a5e22f6d5d4b45845b16bb9549538c257e5b2167c3bb1401874f92154d3e971"
 dependencies = [
  "core_affinity",
-]
-
-[[package]]
-name = "nshare"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60f2f3256fd1d647fdaac74abad0682766a6ffde01f8ccc138f9e1c641ac997c"
-dependencies = [
- "image",
- "nalgebra 0.33.2",
- "ndarray",
 ]
 
 [[package]]
@@ -1783,18 +1757,6 @@ dependencies = [
  "num-traits",
  "paste",
  "wide",
-]
-
-[[package]]
-name = "simba"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c99284beb21666094ba2b75bbceda012e610f5479dfcc2d6e2426f53197ffd95"
-dependencies = [
- "approx",
- "num-complex",
- "num-traits",
- "paste",
 ]
 
 [[package]]

@@ -119,9 +119,7 @@ impl QueueProvider for InMemoryQueueProvider {
         let notifier = self.get_or_create_notifier(queue_name);
         {
             let mut queues = self.queues.lock();
-            let queue = queues
-                .entry(queue_name.to_string())
-                .or_default();
+            let queue = queues.entry(queue_name.to_string()).or_default();
             queue.push_back(job);
         }
         notifier.notify_one();
@@ -133,9 +131,7 @@ impl QueueProvider for InMemoryQueueProvider {
         loop {
             {
                 let mut queues = self.queues.lock();
-                let queue = queues
-                    .entry(queue_name.to_string())
-                    .or_default();
+                let queue = queues.entry(queue_name.to_string()).or_default();
 
                 if queue.len() < max_size {
                     queue.push_back(job);
@@ -151,9 +147,7 @@ impl QueueProvider for InMemoryQueueProvider {
 
     async fn dequeue(&self, queue_name: &str) -> Result<Option<Job>> {
         let mut queues = self.queues.lock();
-        let queue = queues
-            .entry(queue_name.to_string())
-            .or_default();
+        let queue = queues.entry(queue_name.to_string()).or_default();
         Ok(queue.pop_front())
     }
 

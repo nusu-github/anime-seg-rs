@@ -284,11 +284,12 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
                 batch_for_load
                     .par_iter()
                     .map(|job| {
-                        image::open(&job.payload.input_path)
-                            .map_err(|e| (job.id.clone(), e))
+                        image::open(&job.payload.input_path).map_err(|e| (job.id.clone(), e))
                     })
                     .collect()
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
 
             let mut images = Vec::with_capacity(batch_size);
             let mut error_indices = Vec::new();
@@ -305,10 +306,10 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
 
             for idx in error_indices.iter().rev() {
                 let mut failed_job = batch.remove(*idx);
-                failed_job.payload.metadata.insert(
-                    "error".to_string(),
-                    "Image loading error".to_string(),
-                );
+                failed_job
+                    .payload
+                    .metadata
+                    .insert("error".to_string(), "Image loading error".to_string());
                 failed_job.job_type = JobType::Postprocessing;
             }
 
@@ -345,10 +346,9 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
                             return;
                         }
 
-                        job.payload.metadata.insert(
-                            "segmentation_complete".to_string(),
-                            "true".to_string(),
-                        );
+                        job.payload
+                            .metadata
+                            .insert("segmentation_complete".to_string(), "true".to_string());
                         job.payload
                             .metadata
                             .insert("batch_size".to_string(), batch_size.to_string());
@@ -359,7 +359,9 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
                         job.job_type = JobType::Postprocessing;
                     });
                 batch
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
 
             Ok(batch)
         })
