@@ -7,8 +7,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
-/// ワーカープールの抽象化trait
-/// Clean Architectureの依存逆転原則に従い、具体的な実装を隠蔽
+/// Abstracts worker pool to enable testing with different concurrency strategies
 #[async_trait]
 pub trait WorkerPool: Send + Sync {
     async fn start(&self) -> Result<()>;
@@ -18,21 +17,19 @@ pub trait WorkerPool: Send + Sync {
     async fn process_job(&self, job: Job) -> Result<Job>;
 }
 
-/// 個別ワーカーの抽象化trait
 #[async_trait]
 pub trait Worker: Send + Sync {
     async fn process(&self, job: Job) -> Result<Job>;
     fn worker_type(&self) -> WorkerType;
 }
 
-/// ワーカータイプの定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerType {
     Preprocessing,
     Postprocessing,
 }
 
-/// CPU並列処理用ワーカープール
+/// CPU-bound worker pool for pre/post-processing with semaphore-based concurrency control
 pub struct CpuWorkerPool<Q: QueueProvider> {
     queue_provider: Arc<Q>,
     input_queue: String,
@@ -87,26 +84,21 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
         timeout_duration: Duration,
     ) -> Result<()> {
         loop {
-            // ワーカープールが停止要求されたら終了
             if !*is_running.read().await {
                 break;
             }
 
-            // キューにジョブがあるかチェック
             let has_job = match queue_provider.queue_size(&input_queue).await {
                 Ok(size) => size > 0,
                 Err(_) => false,
             };
 
             if !has_job {
-                // ジョブがない場合は少し待つ
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
 
-            // セマフォのチェック（並行実行数制限）
             if semaphore.available_permits() == 0 {
-                // セマフォが満杯の場合は少し待つ
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
@@ -118,16 +110,12 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
             let max_output_queue_size_clone = max_output_queue_size;
             let semaphore_clone = Arc::clone(&semaphore);
 
-            // 各ワーカーを独立したタスクで実行
             tokio::spawn(async move {
-                // ワーカータスク内でセマフォを取得
                 let _permit = semaphore_clone.acquire().await;
 
-                // ジョブを取得
                 let maybe_job = queue_provider_clone.dequeue(&input_queue_clone).await;
 
                 if let Ok(Some(mut job)) = maybe_job {
-                    // ジョブを処理中キューに移動（追跡のため）
                     let processing_queue = format!("{}_processing", input_queue_clone);
                     let _ = queue_provider_clone
                         .enqueue(&processing_queue, job.clone())
@@ -174,13 +162,11 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                     })
                     .await;
 
-                    // 処理中キューからジョブを削除
                     let _ = queue_provider_clone.dequeue(&processing_queue).await;
 
                     match result {
                         Ok(process_result) => {
                             if process_result.is_err() {
-                                // 処理失敗時は元のジョブを再エンキュー（リトライ可能なら）
                                 if job.can_retry() {
                                     job.increment_retry();
                                     if let Err(retry_err) =
@@ -189,7 +175,6 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                                         eprintln!("Failed to re-enqueue failed job: {}", retry_err);
                                     }
                                 } else {
-                                    // リトライ不可能な場合はエラーキューに移動
                                     if let Err(error_err) =
                                         queue_provider_clone.enqueue("error", job).await
                                     {
@@ -199,7 +184,6 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                             }
                         }
                         Err(_) => {
-                            // タイムアウト発生 - ジョブを再エンキュー
                             eprintln!("Worker task timed out after {:?}", timeout_duration);
                             if job.can_retry() {
                                 job.increment_retry();
@@ -209,7 +193,6 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                                     eprintln!("Failed to re-enqueue timed out job: {}", retry_err);
                                 }
                             } else {
-                                // リトライ不可能な場合はエラーキューに移動
                                 if let Err(error_err) =
                                     queue_provider_clone.enqueue("error", job).await
                                 {
@@ -224,7 +207,6 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                 }
             });
 
-            // CPU使用率を抑制するための短時間スリープ
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -239,18 +221,17 @@ impl<Q: QueueProvider + 'static> WorkerPool for CpuWorkerPool<Q> {
         if *running {
             return Err(AnimeSegError::WorkerPool {
                 pool_id: format!("{:?}", self.worker_type),
-                operation: "開始".to_string(),
+                operation: "start".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
-                    "ワーカープールは既に実行中です",
+                    "Worker pool is already running",
                 )),
             });
         }
 
         *running = true;
-        drop(running); // RwLockを明示的に解放
+        drop(running);
 
-        // ワーカープールを別タスクで開始
         let queue_provider = Arc::clone(&self.queue_provider);
         let input_queue = self.input_queue.clone();
         let output_queue = self.output_queue.clone();
@@ -302,7 +283,6 @@ impl<Q: QueueProvider + 'static> WorkerPool for CpuWorkerPool<Q> {
     }
 }
 
-/// 前処理ワーカー実装
 pub struct PreprocessingWorker {
     worker_id: String,
 }
@@ -327,7 +307,7 @@ impl Worker for PreprocessingWorker {
         if job.job_type != JobType::Preprocessing {
             return Err(AnimeSegError::WorkerPool {
                 pool_id: self.worker_id.clone(),
-                operation: "ジョブタイプ検証".to_string(),
+                operation: "job type validation".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("Expected Preprocessing job, got {:?}", job.job_type),
@@ -335,30 +315,26 @@ impl Worker for PreprocessingWorker {
             });
         }
 
-        // 画像ファイルの存在確認
         if !job.payload.input_path.exists() {
             return Err(AnimeSegError::FileSystem {
                 path: job.payload.input_path.clone(),
-                operation: "ファイル存在確認".to_string(),
+                operation: "file existence check".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "入力ファイルが存在しません",
+                    "Input file does not exist",
                 ),
             });
         }
 
-        // 画像読み込み
         let img =
             image::open(&job.payload.input_path).map_err(|e| AnimeSegError::ImageProcessing {
                 path: job.payload.input_path.display().to_string(),
-                operation: "画像読み込み".to_string(),
+                operation: "image loading".to_string(),
                 source: Box::new(e),
             })?;
 
-        // 基本的な前処理（リサイズ、フォーマット検証）
         let processed_img = self.preprocess_image(&img)?;
 
-        // 前処理結果をメタデータに保存
         job.payload.metadata.insert(
             "preprocessed_dimensions".to_string(),
             format!("{}x{}", processed_img.width(), processed_img.height()),
@@ -367,7 +343,6 @@ impl Worker for PreprocessingWorker {
             .metadata
             .insert("worker_id".to_string(), self.worker_id.clone());
 
-        // ジョブタイプを次の段階に更新
         job.job_type = JobType::Inference;
 
         Ok(job)
@@ -380,7 +355,6 @@ impl Worker for PreprocessingWorker {
 
 impl PreprocessingWorker {
     fn preprocess_image(&self, img: &DynamicImage) -> Result<DynamicImage> {
-        // 基本的な前処理：最大サイズ制限
         let max_dimension = 2048;
         let (width, height) = img.dimensions();
 
@@ -396,7 +370,6 @@ impl PreprocessingWorker {
     }
 }
 
-/// 後処理ワーカー実装
 pub struct PostprocessingWorker {
     worker_id: String,
 }
@@ -421,7 +394,7 @@ impl Worker for PostprocessingWorker {
         if job.job_type != JobType::Postprocessing {
             return Err(AnimeSegError::WorkerPool {
                 pool_id: self.worker_id.clone(),
-                operation: "ジョブタイプ検証".to_string(),
+                operation: "job type validation".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("Expected Postprocessing job, got {:?}", job.job_type),
@@ -429,45 +402,39 @@ impl Worker for PostprocessingWorker {
             });
         }
 
-        // 出力ディレクトリの作成
         if let Some(parent) = job.payload.output_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| AnimeSegError::FileSystem {
                 path: parent.to_path_buf(),
-                operation: "出力ディレクトリ作成".to_string(),
+                operation: "output directory creation".to_string(),
                 source: e,
             })?;
         }
 
-        // 推論結果を最終出力ファイルに移動
         if let Some(temp_path_str) = job.payload.metadata.get("temp_path") {
-            // GPU推論の結果ファイルを移動
             let temp_path = std::path::PathBuf::from(temp_path_str);
             if temp_path.exists() {
                 std::fs::rename(&temp_path, &job.payload.output_path)
                     .or_else(|_| {
-                        // renameが失敗した場合（異なるファイルシステムなど）はコピー&削除
                         std::fs::copy(&temp_path, &job.payload.output_path)?;
                         std::fs::remove_file(&temp_path)?;
                         Ok(())
                     })
                     .map_err(|e| AnimeSegError::FileSystem {
                         path: job.payload.output_path.clone(),
-                        operation: "ファイル移動".to_string(),
+                        operation: "file move".to_string(),
                         source: e,
                     })?;
             }
         } else if job.payload.input_path.exists() {
-            // フォールバック：一時ファイルがない場合は入力ファイルをコピー（テスト用）
             std::fs::copy(&job.payload.input_path, &job.payload.output_path).map_err(|e| {
                 AnimeSegError::FileSystem {
                     path: job.payload.output_path.clone(),
-                    operation: "ファイルコピー".to_string(),
+                    operation: "file copy".to_string(),
                     source: e,
                 }
             })?;
         }
 
-        // 後処理結果をメタデータに保存
         job.payload.metadata.insert(
             "postprocessing_worker_id".to_string(),
             self.worker_id.clone(),
@@ -573,17 +540,13 @@ mod tests {
             2,
         );
 
-        // 初期状態で停止
         assert!(!pool.is_running().await);
 
-        // 開始
         pool.start().await?;
         assert!(pool.is_running().await);
 
-        // 停止
         pool.stop().await?;
 
-        // 少し待ってから状態確認
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(!pool.is_running().await);
 
@@ -595,13 +558,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let input_path = temp_dir.path().join("test.jpg");
 
-        // テスト用画像作成
         let test_img = image::DynamicImage::new_rgb8(50, 50);
         test_img.save(&input_path).unwrap();
 
-        // 間違ったジョブタイプでPreprocessingWorkerをテスト
         let job = Job::new(
-            JobType::Postprocessing, // 間違ったタイプ
+            JobType::Postprocessing,
             input_path,
             temp_dir.path().join("output.png"),
         );
@@ -612,7 +573,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             AnimeSegError::WorkerPool { operation, .. } => {
-                assert_eq!(operation, "ジョブタイプ検証");
+                assert_eq!(operation, "job type validation");
             }
             _ => panic!("Expected WorkerPool error"),
         }

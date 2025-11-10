@@ -41,24 +41,24 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
         if !input_path.exists() {
             return Err(AnimeSegError::FileSystem {
                 path: input_path.clone(),
-                operation: "ディレクトリ存在確認".to_string(),
+                operation: "directory existence check".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "入力ディレクトリが存在しません",
+                    "Input directory does not exist",
                 ),
             });
         }
 
         fs::create_dir_all(output_path).map_err(|e| AnimeSegError::FileSystem {
             path: output_path.clone(),
-            operation: "ディレクトリ作成".to_string(),
+            operation: "directory creation".to_string(),
             source: e,
         })?;
 
         let image_files = self.collect_image_files(input_path)?;
 
         if image_files.is_empty() {
-            println!("処理対象の画像ファイルが見つかりません");
+            println!("No image files found to process");
             return Ok(());
         }
 
@@ -80,8 +80,8 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
                 Ok(())
             })?;
 
-        pb.finish_with_message("処理完了");
-        println!("全ての画像処理が完了しました");
+        pb.finish_with_message("Processing complete");
+        println!("All image processing completed");
         Ok(())
     }
 
@@ -112,7 +112,7 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
     fn process_single_image(&self, input_file: &Path, output_dir: &Path) -> Result<()> {
         let img = image::open(input_file).map_err(|e| AnimeSegError::ImageProcessing {
             path: input_file.display().to_string(),
-            operation: "画像読み込み".to_string(),
+            operation: "image loading".to_string(),
             source: Box::new(e),
         })?;
 
@@ -120,7 +120,7 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
             self.segment_image(&img)
                 .map_err(|e| AnimeSegError::ImageProcessing {
                     path: input_file.display().to_string(),
-                    operation: "画像セグメンテーション".to_string(),
+                    operation: "image segmentation".to_string(),
                     source: Box::new(e),
                 })?;
 
@@ -132,7 +132,7 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
         if let Some(parent) = output_file.parent() {
             fs::create_dir_all(parent).map_err(|e| AnimeSegError::FileSystem {
                 path: parent.to_path_buf(),
-                operation: "出力ディレクトリ作成".to_string(),
+                operation: "output directory creation".to_string(),
                 source: e,
             })?;
         }
@@ -151,7 +151,7 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
             .save_with_format(&output_file, output_format)
             .map_err(|e| AnimeSegError::ImageProcessing {
                 path: output_file.display().to_string(),
-                operation: "画像保存".to_string(),
+                operation: "image saving".to_string(),
                 source: Box::new(e),
             })?;
 
@@ -169,16 +169,15 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
             .map(|p| p.to_path_buf())
             .map_err(|_| AnimeSegError::FileSystem {
                 path: input_file.to_path_buf(),
-                operation: "相対パス取得".to_string(),
+                operation: "relative path extraction".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "入力ファイルが入力ディレクトリ内にありません",
+                    "Input file is not within input directory",
                 ),
             })
     }
 }
 
-// Modelクレートとの後方互換性のためのコンストラクタ（非ジェネリック）
 impl ImageProcessor<Model> {
     pub fn with_onnx_model(config: Config) -> Result<Self> {
         let model = Model::new(&config.model_path, config.device_id)?;

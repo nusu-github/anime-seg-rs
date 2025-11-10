@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 分散処理対応の画像プロセッサー
-/// simple_ai_pipeline.mermaidのアーキテクチャを実装
+/// Three-stage pipeline (preprocessing → inference → postprocessing) with queue-based
+/// communication to enable distributed processing and maximize GPU utilization
 pub struct DistributedImageProcessor<Q: QueueProvider, M: BatchImageSegmentationModel + 'static> {
     #[allow(dead_code)]
     model: Arc<M>,
@@ -26,7 +26,6 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
     pub fn new(model: M, queue_provider: Arc<Q>, config: Config) -> Self {
         let model_arc = Arc::new(model);
 
-        // 前処理ワーカープール（推論キューにサイズ制限を設定）
         let preprocessing_pool = CpuWorkerPool::new(
             Arc::clone(&queue_provider),
             queue_names::PREPROCESSING.to_string(),
@@ -37,7 +36,6 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
         .with_output_queue_limit(config.max_inference_queue_size)
         .with_timeout(config.standard_worker_timeout());
 
-        // 後処理ワーカープール
         let postprocessing_pool = CpuWorkerPool::new(
             Arc::clone(&queue_provider),
             queue_names::POSTPROCESSING.to_string(),
@@ -47,7 +45,6 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
         )
         .with_timeout(config.standard_worker_timeout());
 
-        // GPU推論バッチャー
         let batch_config =
             BatchConfiguration::new(config.batch_size as usize, config.batch_timeout_ms);
         let gpu_processor = Arc::new(GpuInferenceBatchProcessor::new(Arc::clone(&model_arc)));
@@ -69,69 +66,59 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
         }
     }
 
-    /// パイプライン全体を開始
     pub async fn start(&self) -> Result<()> {
-        // 各コンポーネントを順番に開始
         self.preprocessing_pool.start().await?;
         self.gpu_batcher.start().await?;
         self.postprocessing_pool.start().await?;
         Ok(())
     }
 
-    /// パイプライン全体を停止
     pub async fn stop(&self) -> Result<()> {
-        // 各コンポーネントを逆順で停止
         self.postprocessing_pool.stop().await?;
         self.gpu_batcher.stop().await?;
         self.preprocessing_pool.stop().await?;
         Ok(())
     }
 
-    /// ディレクトリを処理（エントリーポイント）
     pub async fn process_directory(&self, input_dir: &PathBuf, output_dir: &PathBuf) -> Result<()> {
-        // 入力ディレクトリの存在確認
         if !input_dir.exists() {
             return Err(AnimeSegError::FileSystem {
                 path: input_dir.clone(),
-                operation: "ディレクトリ存在確認".to_string(),
+                operation: "directory existence check".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "入力ディレクトリが存在しません",
+                    "Input directory does not exist",
                 ),
             });
         }
 
-        // 出力ディレクトリの作成
         std::fs::create_dir_all(output_dir).map_err(|e| AnimeSegError::FileSystem {
             path: output_dir.clone(),
-            operation: "ディレクトリ作成".to_string(),
+            operation: "directory creation".to_string(),
             source: e,
         })?;
 
-        // 画像ファイルを収集
         let image_files = self.collect_image_files(input_dir)?;
 
         if image_files.is_empty() {
-            println!("処理対象の画像ファイルが見つかりません");
+            println!("No image files found to process");
             return Ok(());
         }
 
-        println!("{}個の画像ファイルを処理します", image_files.len());
+        println!("Processing {} image files", image_files.len());
 
-        // パイプラインを開始
         self.start().await?;
 
-        // 各画像ファイルをキューに投入
         for input_file in &image_files {
             let relative_path =
                 input_file
                     .strip_prefix(input_dir)
                     .map_err(|_| AnimeSegError::FileSystem {
                         path: input_file.clone(),
-                        operation: "相対パス取得".to_string(),
+                        operation: "relative path extraction".to_string(),
                         source: std::io::Error::new(
                             std::io::ErrorKind::InvalidInput,
-                            "入力ファイルが入力ディレクトリ内にありません",
+                            "Input file is not within input directory",
                         ),
                     })?;
 
@@ -141,20 +128,16 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
 
             let job = Job::new(JobType::Preprocessing, input_file.clone(), output_file);
 
-            // 前処理キューには制限なしで投入（前処理は軽い処理のため）
             self.queue_provider
                 .enqueue(queue_names::PREPROCESSING, job)
                 .await?;
         }
 
-        // 処理完了を待つ（簡易的な実装）
-        // TODO: より洗練された完了検知メカニズムを実装
         self.wait_for_completion(&image_files.len()).await?;
 
-        // パイプラインを停止
         self.stop().await?;
 
-        println!("全ての画像処理が完了しました");
+        println!("All image processing completed");
         Ok(())
     }
 
@@ -186,7 +169,6 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
     }
 
     async fn wait_for_completion(&self, total_jobs: &usize) -> Result<()> {
-        // 完了待機（完了キューとエラーキューのサイズをチェック）
         let mut completed = 0;
         let mut failed = 0;
         let check_interval = tokio::time::Duration::from_millis(500);
@@ -194,7 +176,6 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
         while (completed + failed) < *total_jobs {
             tokio::time::sleep(check_interval).await;
 
-            // 各キューのサイズを確認
             let preprocessing_size = self
                 .queue_provider
                 .queue_size(queue_names::PREPROCESSING)
@@ -224,16 +205,15 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
             completed = completed_size;
             failed = error_size;
 
-            // キューサイズ制限チェック
             let queue_status = if inference_size >= self.config.max_inference_queue_size {
-                " | 推論キュー満杯"
+                " | Inference queue full"
             } else {
                 ""
             };
 
             let progress_message = if failed > 0 {
                 format!(
-                    "進捗: 前処理={}, 推論待ち={}, 後処理={}, 完了={}, 失敗={}, 合計={}/{}{}",
+                    "Progress: preproc={}, inference={}, postproc={}, completed={}, failed={}, total={}/{}{}",
                     preprocessing_size,
                     inference_size,
                     postprocessing_size,
@@ -245,7 +225,7 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
                 )
             } else {
                 format!(
-                    "進捗: 前処理={}, 推論待ち={}, 後処理={}, 完了={}/{}{}",
+                    "Progress: preproc={}, inference={}, postproc={}, completed={}/{}{}",
                     preprocessing_size,
                     inference_size,
                     postprocessing_size,
@@ -259,14 +239,14 @@ impl<Q: QueueProvider + 'static, M: BatchImageSegmentationModel + 'static>
         }
 
         if failed > 0 {
-            println!("警告: {}個のジョブが失敗しました", failed);
+            println!("Warning: {} jobs failed", failed);
         }
 
         Ok(())
     }
 }
 
-/// GPU推論バッチプロセッサー（実際のモデルを使用）
+/// Processes batches of images using GPU inference to maximize throughput
 pub struct GpuInferenceBatchProcessor<M: BatchImageSegmentationModel> {
     model: Arc<M>,
 }
@@ -282,90 +262,123 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
     async fn process_batch(&self, mut batch: Vec<Job>) -> Result<Vec<Job>> {
         let batch_size = batch.len();
 
-        // ジョブタイプの検証
-        for job in &batch {
-            if job.job_type != JobType::Inference {
-                return Err(AnimeSegError::BatchProcessing {
-                    batch_size,
-                    operation: "ジョブタイプ検証".to_string(),
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("Expected Inference jobs, got {:?}", job.job_type),
-                    )),
-                });
-            }
-        }
+        let timeout_duration = std::time::Duration::from_secs(5 * batch_size as u64);
 
-        // バッチで画像を読み込み
-        let mut images = Vec::with_capacity(batch_size);
-        let mut load_errors = Vec::new();
-
-        for (idx, job) in batch.iter().enumerate() {
-            match image::open(&job.payload.input_path) {
-                Ok(img) => images.push(img),
-                Err(e) => {
-                    load_errors.push((idx, e));
-                    // エラーが発生した画像は空の画像で置き換え
-                    images.push(image::DynamicImage::new_rgb8(1, 1));
+        let result = tokio::time::timeout(timeout_duration, async {
+            for job in &batch {
+                if job.job_type != JobType::Inference {
+                    return Err(AnimeSegError::BatchProcessing {
+                        batch_size,
+                        operation: "job type validation".to_string(),
+                        source: Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("Expected Inference jobs, got {:?}", job.job_type),
+                        )),
+                    });
                 }
             }
-        }
 
-        // 真のバッチ推論を実行
-        let segmented_images = self.model.segment_images_batch(&images)?;
+            use rayon::prelude::*;
+            let load_results: Vec<_> = batch
+                .par_iter()
+                .map(|job| {
+                    image::open(&job.payload.input_path)
+                        .map_err(|e| (job.id.clone(), e))
+                })
+                .collect();
 
-        // 結果をジョブに反映
-        for (i, (job, segmented)) in batch.iter_mut().zip(segmented_images.iter()).enumerate() {
-            // 画像読み込みでエラーが発生していた場合はスキップ
-            if load_errors.iter().any(|(idx, _)| *idx == i) {
-                job.payload
-                    .metadata
-                    .insert("error".to_string(), "画像読み込みエラー".to_string());
-                continue;
+            let mut images = Vec::with_capacity(batch_size);
+            let mut error_indices = Vec::new();
+
+            for (idx, result) in load_results.into_iter().enumerate() {
+                match result {
+                    Ok(img) => images.push(img),
+                    Err((job_id, e)) => {
+                        error_indices.push(idx);
+                        eprintln!("Failed to load image for job {}: {}", job_id, e);
+                    }
+                }
             }
 
-            // 一時ファイルとして保存（後処理ワーカーで最終保存）
-            // .tmp.png という拡張子にして画像フォーマットを保持
-            let temp_path = job.payload.output_path.with_file_name(format!(
-                "{}.tmp.png",
-                job.payload
-                    .output_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ));
-            if let Some(parent) = temp_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| AnimeSegError::FileSystem {
-                    path: parent.to_path_buf(),
-                    operation: "ディレクトリ作成".to_string(),
-                    source: e,
-                })?;
+            for idx in error_indices.iter().rev() {
+                let mut failed_job = batch.remove(*idx);
+                failed_job.payload.metadata.insert(
+                    "error".to_string(),
+                    "Image loading error".to_string(),
+                );
+                failed_job.job_type = JobType::Postprocessing;
             }
 
-            segmented
-                .save(&temp_path)
-                .map_err(|e| AnimeSegError::ImageProcessing {
-                    path: temp_path.display().to_string(),
-                    operation: "一時ファイル保存".to_string(),
-                    source: Box::new(e),
-                })?;
+            if images.is_empty() {
+                return Ok(batch);
+            }
 
-            // メタデータを更新
-            job.payload
-                .metadata
-                .insert("segmentation_complete".to_string(), "true".to_string());
-            job.payload
-                .metadata
-                .insert("batch_size".to_string(), batch_size.to_string());
-            job.payload
-                .metadata
-                .insert("temp_path".to_string(), temp_path.display().to_string());
+            let segmented_images = self.model.segment_images_batch(&images)?;
 
-            // ジョブタイプを更新
-            job.job_type = JobType::Postprocessing;
+            let save_results: Vec<_> = batch
+                .par_iter_mut()
+                .zip(segmented_images.par_iter())
+                .map(|(job, segmented)| {
+                    let temp_path = job.payload.output_path.with_file_name(format!(
+                        "{}.tmp.png",
+                        job.payload
+                            .output_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ));
+
+                    if let Some(parent) = temp_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| AnimeSegError::FileSystem {
+                            path: parent.to_path_buf(),
+                            operation: "directory creation".to_string(),
+                            source: e,
+                        })?;
+                    }
+
+                    segmented.save(&temp_path).map_err(|e| AnimeSegError::ImageProcessing {
+                        path: temp_path.display().to_string(),
+                        operation: "temporary file save".to_string(),
+                        source: Box::new(e),
+                    })?;
+
+                    job.payload.metadata.insert(
+                        "segmentation_complete".to_string(),
+                        "true".to_string(),
+                    );
+                    job.payload
+                        .metadata
+                        .insert("batch_size".to_string(), batch_size.to_string());
+                    job.payload
+                        .metadata
+                        .insert("temp_path".to_string(), temp_path.display().to_string());
+
+                    job.job_type = JobType::Postprocessing;
+
+                    Ok::<(), AnimeSegError>(())
+                })
+                .collect();
+
+            for result in save_results {
+                result?;
+            }
+
+            Ok(batch)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(processed_batch)) => Ok(processed_batch),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(AnimeSegError::BatchProcessing {
+                batch_size,
+                operation: "batch inference".to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("Batch processing timed out after {:?}", timeout_duration),
+                )),
+            }),
         }
-
-        Ok(batch)
     }
 
     fn batch_type(&self) -> JobType {

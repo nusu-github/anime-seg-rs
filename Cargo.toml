@@ -20,8 +20,8 @@ keywords = [
 default = ["image"]
 
 # ort execution providers
-cuda = ["ort/cuda"]
-tensorrt = ["ort/tensorrt"]
+cuda = ["ort/cuda", "ort/copy-dylibs"]
+tensorrt = ["ort/tensorrt", "ort/cuda", "ort/copy-dylibs"]
 
 # image processing
 image = ["image/jpeg", "image/png", "image/webp"]
@@ -33,24 +33,30 @@ image-avif = ["image/avif"]
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5.40", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive"] }
 image = { version = "0.25", default-features = false }
-imageops-ai = { git = "https://github.com/nusu-github/imageops-ai", version = "0.1.0" }
+imageops-kit = { git = "https://github.com/nusu-github/imageops-kit", version = "0.1.0" }
 imageproc = { version = "0.25", default-features = false }
-indicatif = "0.17.12"
+indicatif = "0.18"
 ndarray = "0.16"
 nshare = { version = "0.10", default-features = false, features = ["image", "ndarray"] }
 ort = "2.0.0-rc.10"
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
-rayon = "1.10"
+rayon = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
-uuid = { version = "1.17", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
 walkdir = "2.5"
 
 [dev-dependencies]
-tempfile = "3.20"
+tempfile = "3.23"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 
 [profile.release.package."*"]
 opt-level = 3

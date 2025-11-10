@@ -1,18 +1,14 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// アプリケーション固有のエラータイプ
-///
-/// 分散処理環境でのエラーハンドリングを強化し、
-/// 適切なエラー分類とリカバリー戦略を提供する
+/// Error types designed for distributed processing with structured classification
+/// to enable intelligent retry strategies and proper error recovery
 #[derive(Error, Debug)]
 pub enum AnimeSegError {
-    /// 設定関連のエラー
-    #[error("設定エラー: {message}")]
+    #[error("Configuration error: {message}")]
     Configuration { message: String },
 
-    /// ファイルシステム関連のエラー
-    #[error("ファイルシステムエラー: {path}で{operation}に失敗")]
+    #[error("Filesystem error: {operation} failed for {path}")]
     FileSystem {
         path: PathBuf,
         operation: String,
@@ -20,8 +16,7 @@ pub enum AnimeSegError {
         source: std::io::Error,
     },
 
-    /// 画像処理関連のエラー
-    #[error("画像処理エラー: {operation}に失敗 (ファイル: {path})")]
+    #[error("Image processing error: {operation} failed (file: {path})")]
     ImageProcessing {
         path: String,
         operation: String,
@@ -29,16 +24,14 @@ pub enum AnimeSegError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// モデル関連のエラー
-    #[error("モデルエラー: {operation}に失敗")]
+    #[error("Model error: {operation} failed")]
     Model {
         operation: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// バッチ処理関連のエラー
-    #[error("バッチ処理エラー: バッチサイズ{batch_size}で{operation}に失敗")]
+    #[error("Batch processing error: {operation} failed for batch size {batch_size}")]
     BatchProcessing {
         batch_size: usize,
         operation: String,
@@ -46,8 +39,7 @@ pub enum AnimeSegError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// ワーカープール関連のエラー
-    #[error("ワーカープールエラー: プール{pool_id}で{operation}に失敗")]
+    #[error("Worker pool error: {operation} failed for pool {pool_id}")]
     WorkerPool {
         pool_id: String,
         operation: String,
@@ -55,8 +47,7 @@ pub enum AnimeSegError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// キューイングシステム関連のエラー
-    #[error("キューエラー: キュー{queue_name}で{operation}に失敗")]
+    #[error("Queue error: {operation} failed for queue {queue_name}")]
     Queue {
         queue_name: String,
         operation: String,
@@ -64,8 +55,7 @@ pub enum AnimeSegError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// ネットワーク関連のエラー（Redis等）
-    #[error("ネットワークエラー: {endpoint}への{operation}に失敗")]
+    #[error("Network error: {operation} failed for {endpoint}")]
     Network {
         endpoint: String,
         operation: String,
@@ -73,13 +63,11 @@ pub enum AnimeSegError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// タイムアウトエラー
-    #[error("タイムアウトエラー: {operation}が{timeout_ms}ms以内に完了しませんでした")]
+    #[error("Timeout error: {operation} did not complete within {timeout_ms}ms")]
     Timeout { operation: String, timeout_ms: u64 },
 
-    /// リソース不足エラー
     #[error(
-        "リソース不足: {resource_type}が不足しています（要求: {required}, 利用可能: {available}）"
+        "Resource exhausted: {resource_type} insufficient (required: {required}, available: {available})"
     )]
     ResourceExhausted {
         resource_type: String,
@@ -87,20 +75,17 @@ pub enum AnimeSegError {
         available: u64,
     },
 
-    /// 検証エラー
-    #[error("検証エラー: {field}は{reason}")]
+    #[error("Validation error: {field} {reason}")]
     Validation { field: String, reason: String },
 
-    /// システム関連のエラー
-    #[error("システムエラー: {operation}に失敗")]
+    #[error("System error: {operation} failed")]
     System {
         operation: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// 一般的なアプリケーションエラー
-    #[error("アプリケーションエラー: {message}")]
+    #[error("Application error: {message}")]
     Application {
         message: String,
         #[source]
@@ -108,30 +93,29 @@ pub enum AnimeSegError {
     },
 }
 
-/// 結果型のエイリアス
 pub type Result<T> = std::result::Result<T, AnimeSegError>;
 
 impl AnimeSegError {
-    /// エラーが再試行可能かどうかを判定
+    /// Determines if error warrants automatic retry based on transient failure patterns
     pub const fn is_retryable(&self) -> bool {
         match self {
             Self::Network { .. } => true,
             Self::Timeout { .. } => true,
             Self::ResourceExhausted { .. } => true,
             Self::Queue { .. } => true,
-            Self::WorkerPool { .. } => false, // プールエラーは通常再試行不可
-            Self::Model { .. } => false,      // モデルエラーは通常再試行不可
+            Self::WorkerPool { .. } => false,
+            Self::Model { .. } => false,
             Self::Configuration { .. } => false,
             Self::Validation { .. } => false,
             Self::FileSystem { .. } => false,
             Self::ImageProcessing { .. } => false,
-            Self::BatchProcessing { .. } => true, // バッチサイズ調整で再試行可能
+            Self::BatchProcessing { .. } => true,
             Self::System { .. } => false,
             Self::Application { .. } => false,
         }
     }
 
-    /// エラーの重要度を取得
+    /// Returns severity level to prioritize error handling and logging
     pub const fn severity(&self) -> ErrorSeverity {
         match self {
             Self::Configuration { .. } => ErrorSeverity::Critical,
@@ -150,7 +134,7 @@ impl AnimeSegError {
         }
     }
 
-    /// 推奨されるリカバリー戦略を取得
+    /// Suggests recovery strategy optimized for each error type's failure characteristics
     pub const fn recovery_strategy(&self) -> RecoveryStrategy {
         match self {
             Self::Network { .. } => RecoveryStrategy::Retry {
@@ -173,7 +157,6 @@ impl AnimeSegError {
     }
 }
 
-/// エラーの重要度
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ErrorSeverity {
     Low,
@@ -182,22 +165,16 @@ pub enum ErrorSeverity {
     Critical,
 }
 
-/// リカバリー戦略
+/// Recovery strategies tailored to different failure modes in distributed processing
 #[derive(Debug, Clone)]
 pub enum RecoveryStrategy {
-    /// 失敗として処理
     Fail,
-    /// 指定回数再試行
     Retry { max_attempts: u32, backoff_ms: u64 },
-    /// 待機後再試行
     WaitAndRetry { wait_ms: u64 },
-    /// バッチサイズを減らして再試行
     ReduceBatchSizeAndRetry,
-    /// 代替処理に切り替え
     Fallback,
 }
 
-/// anyhow::Errorからの変換
 impl From<anyhow::Error> for AnimeSegError {
     fn from(err: anyhow::Error) -> Self {
         Self::Application {
@@ -207,7 +184,6 @@ impl From<anyhow::Error> for AnimeSegError {
     }
 }
 
-/// std::io::Errorからの変換
 impl From<std::io::Error> for AnimeSegError {
     fn from(err: std::io::Error) -> Self {
         Self::FileSystem {
@@ -218,7 +194,6 @@ impl From<std::io::Error> for AnimeSegError {
     }
 }
 
-/// image::ImageErrorからの変換
 impl From<image::ImageError> for AnimeSegError {
     fn from(err: image::ImageError) -> Self {
         Self::ImageProcessing {
@@ -229,7 +204,6 @@ impl From<image::ImageError> for AnimeSegError {
     }
 }
 
-/// ort::Errorからの変換
 impl From<ort::Error> for AnimeSegError {
     fn from(err: ort::Error) -> Self {
         Self::Model {
@@ -239,7 +213,6 @@ impl From<ort::Error> for AnimeSegError {
     }
 }
 
-/// ndarray::ShapeErrorからの変換
 impl From<ndarray::ShapeError> for AnimeSegError {
     fn from(err: ndarray::ShapeError) -> Self {
         Self::Model {

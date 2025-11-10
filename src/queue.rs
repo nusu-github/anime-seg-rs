@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// キューイングシステムの抽象化trait
-/// Clean Architectureの依存逆転原則に従い、Redis実装の詳細を隠蔽
+/// Queue abstraction following dependency inversion principle to hide
+/// implementation details (Redis, in-memory, etc.) from business logic
 #[async_trait]
 pub trait QueueProvider: Send + Sync {
     async fn enqueue(&self, queue_name: &str, job: Job) -> Result<()>;
@@ -18,7 +18,7 @@ pub trait QueueProvider: Send + Sync {
     async fn clear_queue(&self, queue_name: &str) -> Result<()>;
 }
 
-/// 処理ジョブの定義
+/// Processing job with retry logic and metadata for distributed tracking
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Job {
     pub id: String,
@@ -29,7 +29,7 @@ pub struct Job {
     pub max_retries: u32,
 }
 
-/// ジョブタイプの定義
+/// Job type to route jobs to appropriate processing stages
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum JobType {
     Preprocessing,
@@ -37,7 +37,6 @@ pub enum JobType {
     Postprocessing,
 }
 
-/// ジョブペイロードの定義
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobPayload {
     pub input_path: PathBuf,
@@ -82,8 +81,8 @@ impl Job {
     }
 }
 
-/// テスト用インメモリキュー実装
-/// 本番環境ではRedisQueueProviderを使用
+/// In-memory queue for testing and single-machine deployments.
+/// Use RedisQueueProvider for production distributed setups.
 #[derive(Debug)]
 pub struct InMemoryQueueProvider {
     queues: Arc<Mutex<std::collections::HashMap<String, VecDeque<Job>>>>,
@@ -126,9 +125,8 @@ impl QueueProvider for InMemoryQueueProvider {
                     queue.push_back(job);
                     return Ok(());
                 }
-            } // ロックを解放
+            }
 
-            // キューが満杯の場合は少し待機
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
     }
@@ -155,8 +153,7 @@ impl QueueProvider for InMemoryQueueProvider {
     }
 }
 
-/// Redis実装（プレースホルダー）
-/// 実際のRedis接続は後で実装
+/// Redis-based queue provider (placeholder for future implementation)
 pub struct RedisQueueProvider {
     _redis_url: String,
 }
@@ -172,7 +169,6 @@ impl RedisQueueProvider {
 #[async_trait]
 impl QueueProvider for RedisQueueProvider {
     async fn enqueue(&self, _queue_name: &str, _job: Job) -> Result<()> {
-        // TODO: Redis実装
         Err(AnimeSegError::Queue {
             queue_name: _queue_name.to_string(),
             operation: "enqueue".to_string(),
@@ -188,7 +184,6 @@ impl QueueProvider for RedisQueueProvider {
         _job: Job,
         _max_size: usize,
     ) -> Result<()> {
-        // TODO: Redis実装
         Err(AnimeSegError::Queue {
             queue_name: _queue_name.to_string(),
             operation: "enqueue_with_limit".to_string(),
@@ -229,7 +224,6 @@ impl QueueProvider for RedisQueueProvider {
     }
 }
 
-/// キューの名前定数
 pub mod queue_names {
     pub const PREPROCESSING: &str = "preprocessing";
     pub const INFERENCE: &str = "inference";
@@ -283,15 +277,12 @@ mod tests {
             PathBuf::from("/output/test.png"),
         );
 
-        // 初期状態でリトライ可能
         assert!(job.can_retry());
 
-        // 最大リトライ回数まで試行
         for _ in 0..3 {
             job.increment_retry();
         }
 
-        // 最大リトライ回数到達でリトライ不可
         assert!(!job.can_retry());
     }
 
@@ -300,11 +291,9 @@ mod tests {
         let queue_provider = InMemoryQueueProvider::new();
         let queue_name = "test_queue";
 
-        // 初期状態でキューは空
         assert_eq!(queue_provider.queue_size(queue_name).await?, 0);
         assert_eq!(queue_provider.dequeue(queue_name).await?, None);
 
-        // ジョブをエンキュー
         let job1 = Job::new(
             JobType::Preprocessing,
             PathBuf::from("/input/test1.jpg"),
@@ -319,17 +308,14 @@ mod tests {
         queue_provider.enqueue(queue_name, job1.clone()).await?;
         queue_provider.enqueue(queue_name, job2.clone()).await?;
 
-        // キューサイズ確認
         assert_eq!(queue_provider.queue_size(queue_name).await?, 2);
 
-        // FIFO順序でデキュー
         let dequeued1 = queue_provider.dequeue(queue_name).await?;
         assert_eq!(dequeued1, Some(job1));
 
         let dequeued2 = queue_provider.dequeue(queue_name).await?;
         assert_eq!(dequeued2, Some(job2));
 
-        // キューが空になる
         assert_eq!(queue_provider.queue_size(queue_name).await?, 0);
         assert_eq!(queue_provider.dequeue(queue_name).await?, None);
 
@@ -341,7 +327,6 @@ mod tests {
         let queue_provider = InMemoryQueueProvider::new();
         let queue_name = "test_clear_queue";
 
-        // ジョブをエンキュー
         let job = Job::new(
             JobType::Preprocessing,
             PathBuf::from("/input/test.jpg"),
@@ -351,7 +336,6 @@ mod tests {
 
         assert_eq!(queue_provider.queue_size(queue_name).await?, 1);
 
-        // キューをクリア
         queue_provider.clear_queue(queue_name).await?;
         assert_eq!(queue_provider.queue_size(queue_name).await?, 0);
 

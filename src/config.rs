@@ -52,7 +52,7 @@ impl Config {
         Self::parse()
     }
 
-    /// バッチサイズに基づいて推論ワーカーのタイムアウトを計算
+    /// Scales timeout with batch size to prevent timeouts on large batches
     pub const fn inference_worker_timeout(&self) -> std::time::Duration {
         let base_timeout = self.worker_timeout_secs;
         let batch_size_multiplier =
@@ -60,7 +60,7 @@ impl Config {
         std::time::Duration::from_secs(base_timeout + batch_size_multiplier)
     }
 
-    /// 前処理・後処理ワーカーのタイムアウト
+    /// Returns baseline timeout for CPU-bound pre/post-processing tasks
     pub const fn standard_worker_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.worker_timeout_secs)
     }

@@ -6,14 +6,14 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::{interval, timeout};
 
-/// バッチ処理の設定
+/// Configuration for batch processing to optimize GPU utilization
 #[derive(Debug, Clone)]
 pub struct BatchConfiguration {
-    /// 最大バッチサイズ（これに達したら即座に処理）
+    /// Maximum batch size triggers immediate processing to avoid GPU starvation
     pub max_batch_size: usize,
-    /// バッチタイムアウト（この時間経過後、最小サイズ以上なら処理）
+    /// Timeout balances throughput (larger batches) vs latency (faster response)
     pub timeout: Duration,
-    /// 最小バッチサイズ（これ未満では処理しない、タイムアウト時を除く）
+    /// Minimum batch size prevents inefficient small batches except on timeout
     pub min_batch_size: usize,
 }
 
@@ -34,18 +34,18 @@ impl BatchConfiguration {
 
 impl Default for BatchConfiguration {
     fn default() -> Self {
-        Self::new(32, 5000) // デフォルト: 32個または5秒
+        Self::new(32, 5000)
     }
 }
 
-/// バッチ処理の抽象化trait
+/// Abstraction for batch processing to enable testability and flexible implementations
 #[async_trait]
 pub trait BatchProcessor: Send + Sync {
     async fn process_batch(&self, batch: Vec<Job>) -> Result<Vec<Job>>;
     fn batch_type(&self) -> JobType;
 }
 
-/// バッチャー実装
+/// Aggregates jobs into batches with timeout support to maximize GPU throughput
 pub struct Batcher<Q: QueueProvider, P: BatchProcessor> {
     config: BatchConfiguration,
     queue_provider: Arc<Q>,
@@ -85,10 +85,10 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
         if *running {
             return Err(AnimeSegError::BatchProcessing {
                 batch_size: 0,
-                operation: "バッチャー開始".to_string(),
+                operation: "batcher start".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
-                    "バッチャーは既に実行中です",
+                    "Batcher is already running",
                 )),
             });
         }
@@ -142,11 +142,10 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
         is_running: Arc<Mutex<bool>>,
     ) -> Result<()> {
         let mut batch: Vec<Job> = Vec::with_capacity(config.max_batch_size);
-        let mut interval = interval(Duration::from_millis(100)); // チェック間隔
+        let mut interval = interval(Duration::from_millis(100));
 
         loop {
             if !*is_running.lock().await {
-                // 残りのバッチを処理してから終了
                 if !batch.is_empty() {
                     Self::process_and_enqueue_batch(
                         &batch,
@@ -160,25 +159,20 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
                 break;
             }
 
-            // タイムアウト付きでジョブを収集
             let collection_result = timeout(config.timeout, async {
                 loop {
-                    // キューからジョブを取得
                     match queue_provider.dequeue(&input_queue).await {
                         Ok(Some(job)) => {
                             batch.push(job);
 
-                            // 最大バッチサイズに達したら即座に処理
                             if batch.len() >= config.max_batch_size {
-                                return Ok(true); // バッチフル
+                                return Ok(true);
                             }
                         }
                         Ok(None) => {
-                            // キューが空の場合
                             if batch.len() >= config.min_batch_size {
-                                return Ok(true); // 最小サイズ以上なら処理
+                                return Ok(true);
                             }
-                            // 少し待つ
                             interval.tick().await;
                         }
                         Err(e) => return Err(e),
@@ -187,10 +181,8 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
             })
             .await;
 
-            // タイムアウトまたはバッチフルで処理
             match collection_result {
                 Ok(Ok(true)) | Err(_) => {
-                    // バッチフルまたはタイムアウト
                     if !batch.is_empty() {
                         let current_batch = std::mem::replace(
                             &mut batch,
@@ -225,7 +217,6 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
 
         match processor.process_batch(batch.to_vec()).await {
             Ok(processed_jobs) => {
-                // 処理済みジョブをキューに戻す
                 for job in processed_jobs {
                     if let Some(max_size) = max_output_queue_size {
                         queue_provider
@@ -238,10 +229,8 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
                 Ok(())
             }
             Err(e) => {
-                // バッチ処理失敗時は個別にリトライ
                 eprintln!("Batch processing failed for {} jobs: {}", batch_size, e);
 
-                // 各ジョブを個別に再キューイング（リトライ処理）
                 for mut job in batch.to_vec() {
                     if job.can_retry() {
                         job.increment_retry();
@@ -265,7 +254,7 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
     }
 }
 
-/// GPU推論用バッチプロセッサーのモック実装
+/// Mock GPU inference batch processor for testing without actual model
 #[derive(Debug)]
 pub struct GpuInferenceBatchProcessor {
     batch_type: JobType,
@@ -288,16 +277,13 @@ impl Default for GpuInferenceBatchProcessor {
 #[async_trait]
 impl BatchProcessor for GpuInferenceBatchProcessor {
     async fn process_batch(&self, mut batch: Vec<Job>) -> Result<Vec<Job>> {
-        // GPU推論のモック実装
-        // 実際の実装ではここでGPUモデルを使用してバッチ推論を行う
-
         let batch_size = batch.len();
 
         for job in &mut batch {
             if job.job_type != self.batch_type {
                 return Err(AnimeSegError::BatchProcessing {
                     batch_size,
-                    operation: "ジョブタイプ検証".to_string(),
+                    operation: "job type validation".to_string(),
                     source: Box::new(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!("Expected {:?} jobs", self.batch_type),
@@ -305,7 +291,6 @@ impl BatchProcessor for GpuInferenceBatchProcessor {
                 });
             }
 
-            // 推論済みとしてマーク
             job.job_type = JobType::Postprocessing;
             job.payload
                 .metadata
@@ -339,7 +324,6 @@ mod tests {
         let config = config.with_min_batch_size(4);
         assert_eq!(config.min_batch_size, 4);
 
-        // 最小サイズは最大サイズを超えない
         let config = config.with_min_batch_size(20);
         assert_eq!(config.min_batch_size, 16);
     }
@@ -417,9 +401,8 @@ mod tests {
     async fn test_batch_size_trigger() -> Result<()> {
         let queue_provider = Arc::new(InMemoryQueueProvider::new());
         let processor = Arc::new(GpuInferenceBatchProcessor::new());
-        let config = BatchConfiguration::new(3, 10000); // 3個で即処理、10秒タイムアウト
+        let config = BatchConfiguration::new(3, 10000);
 
-        // ジョブを投入
         for i in 0..3 {
             let job = Job::new(
                 JobType::Inference,
@@ -439,10 +422,8 @@ mod tests {
 
         batcher.start().await?;
 
-        // バッチ処理が完了するまで待つ
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // 出力キューに3つのジョブがあることを確認
         assert_eq!(queue_provider.queue_size("postprocessing_queue").await?, 3);
 
         batcher.stop().await?;
@@ -454,10 +435,8 @@ mod tests {
     async fn test_timeout_trigger() -> Result<()> {
         let queue_provider = Arc::new(InMemoryQueueProvider::new());
         let processor = Arc::new(GpuInferenceBatchProcessor::new());
-        // 最小バッチサイズを3に設定して、2つのジョブでは即座に処理されないようにする
         let config = BatchConfiguration::new(10, 500).with_min_batch_size(3);
 
-        // 2つだけジョブを投入（バッチサイズ未満）
         for i in 0..2 {
             let job = Job::new(
                 JobType::Inference,
@@ -477,11 +456,9 @@ mod tests {
 
         batcher.start().await?;
 
-        // タイムアウト前は処理されない（最小バッチサイズ未満のため）
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(queue_provider.queue_size("postprocessing_queue").await?, 0);
 
-        // タイムアウト後は処理される
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(queue_provider.queue_size("postprocessing_queue").await?, 2);
 
