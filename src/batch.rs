@@ -1,10 +1,12 @@
 use crate::errors::{AnimeSegError, Result};
 use crate::queue::{Job, JobType, QueueProvider};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::{interval, timeout};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 /// Configuration for batch processing to optimize GPU utilization
 #[derive(Debug, Clone)]
@@ -45,6 +47,18 @@ pub trait BatchProcessor: Send + Sync {
     fn batch_type(&self) -> JobType;
 }
 
+/// Configuration for batching loop
+struct BatchingLoopConfig<Q: QueueProvider, P: BatchProcessor> {
+    config: BatchConfiguration,
+    queue_provider: Arc<Q>,
+    processor: Arc<P>,
+    input_queue: String,
+    output_queue: String,
+    max_output_queue_size: Option<usize>,
+    is_running: Arc<Mutex<bool>>,
+    cancellation_token: CancellationToken,
+}
+
 /// Aggregates jobs into batches with timeout support to maximize GPU throughput
 pub struct Batcher<Q: QueueProvider, P: BatchProcessor> {
     config: BatchConfiguration,
@@ -54,6 +68,8 @@ pub struct Batcher<Q: QueueProvider, P: BatchProcessor> {
     output_queue: String,
     max_output_queue_size: Option<usize>,
     is_running: Arc<Mutex<bool>>,
+    tracker: TaskTracker,
+    cancellation_token: CancellationToken,
 }
 
 impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
@@ -72,6 +88,8 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
             output_queue,
             max_output_queue_size: None,
             is_running: Arc::new(Mutex::new(false)),
+            tracker: TaskTracker::new(),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -81,7 +99,7 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let mut running = self.is_running.lock().await;
+        let mut running = self.is_running.lock();
         if *running {
             return Err(AnimeSegError::BatchProcessing {
                 batch_size: 0,
@@ -95,26 +113,19 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
         *running = true;
         drop(running);
 
-        let config = self.config.clone();
-        let queue_provider = Arc::clone(&self.queue_provider);
-        let processor = Arc::clone(&self.processor);
-        let input_queue = self.input_queue.clone();
-        let output_queue = self.output_queue.clone();
-        let max_output_queue_size = self.max_output_queue_size;
-        let is_running = Arc::clone(&self.is_running);
+        let loop_config = BatchingLoopConfig {
+            config: self.config.clone(),
+            queue_provider: Arc::clone(&self.queue_provider),
+            processor: Arc::clone(&self.processor),
+            input_queue: self.input_queue.clone(),
+            output_queue: self.output_queue.clone(),
+            max_output_queue_size: self.max_output_queue_size,
+            is_running: Arc::clone(&self.is_running),
+            cancellation_token: self.cancellation_token.clone(),
+        };
 
-        tokio::spawn(async move {
-            if let Err(e) = Self::run_batching_loop(
-                config,
-                queue_provider,
-                processor,
-                input_queue,
-                output_queue,
-                max_output_queue_size,
-                is_running,
-            )
-            .await
-            {
+        self.tracker.spawn(async move {
+            if let Err(e) = Self::run_batching_loop(loop_config).await {
                 eprintln!("Batcher error: {}", e);
             }
         });
@@ -123,29 +134,38 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
     }
 
     pub async fn stop(&self) -> Result<()> {
-        let mut running = self.is_running.lock().await;
-        *running = false;
+        {
+            let mut running = self.is_running.lock();
+            *running = false;
+        }
+
+        self.tracker.close();
+        self.cancellation_token.cancel();
+        self.tracker.wait().await;
         Ok(())
     }
 
     pub async fn is_running(&self) -> bool {
-        *self.is_running.lock().await
+        *self.is_running.lock()
     }
 
-    async fn run_batching_loop(
-        config: BatchConfiguration,
-        queue_provider: Arc<Q>,
-        processor: Arc<P>,
-        input_queue: String,
-        output_queue: String,
-        max_output_queue_size: Option<usize>,
-        is_running: Arc<Mutex<bool>>,
-    ) -> Result<()> {
+    async fn run_batching_loop(loop_config: BatchingLoopConfig<Q, P>) -> Result<()> {
+        let BatchingLoopConfig {
+            config,
+            queue_provider,
+            processor,
+            input_queue,
+            output_queue,
+            max_output_queue_size,
+            is_running,
+            cancellation_token,
+        } = loop_config;
+
         let mut batch: Vec<Job> = Vec::with_capacity(config.max_batch_size);
         let mut interval = interval(Duration::from_millis(100));
 
         loop {
-            if !*is_running.lock().await {
+            if cancellation_token.is_cancelled() || !*is_running.lock() {
                 if !batch.is_empty() {
                     Self::process_and_enqueue_batch(
                         &batch,
@@ -231,7 +251,7 @@ impl<Q: QueueProvider + 'static, P: BatchProcessor + 'static> Batcher<Q, P> {
             Err(e) => {
                 eprintln!("Batch processing failed for {} jobs: {}", batch_size, e);
 
-                for mut job in batch.to_vec() {
+                for mut job in batch.iter().cloned() {
                     if job.can_retry() {
                         job.increment_retry();
                         let requeue_result = if let Some(max_size) = max_output_queue_size {

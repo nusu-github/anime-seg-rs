@@ -278,14 +278,17 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
                 }
             }
 
-            use rayon::prelude::*;
-            let load_results: Vec<_> = batch
-                .par_iter()
-                .map(|job| {
-                    image::open(&job.payload.input_path)
-                        .map_err(|e| (job.id.clone(), e))
-                })
-                .collect();
+            let batch_for_load = batch.clone();
+            let load_results: Vec<_> = tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                batch_for_load
+                    .par_iter()
+                    .map(|job| {
+                        image::open(&job.payload.input_path)
+                            .map_err(|e| (job.id.clone(), e))
+                    })
+                    .collect()
+            }).await.unwrap();
 
             let mut images = Vec::with_capacity(batch_size);
             let mut error_indices = Vec::new();
@@ -315,53 +318,48 @@ impl<M: BatchImageSegmentationModel + 'static> BatchProcessor for GpuInferenceBa
 
             let segmented_images = self.model.segment_images_batch(&images)?;
 
-            let save_results: Vec<_> = batch
-                .par_iter_mut()
-                .zip(segmented_images.par_iter())
-                .map(|(job, segmented)| {
-                    let temp_path = job.payload.output_path.with_file_name(format!(
-                        "{}.tmp.png",
+            let batch = tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                batch
+                    .par_iter_mut()
+                    .zip(segmented_images.par_iter())
+                    .for_each(|(job, segmented)| {
+                        let temp_path = job.payload.output_path.with_file_name(format!(
+                            "{}.tmp.png",
+                            job.payload
+                                .output_path
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ));
+
+                        if let Some(parent) = temp_path.parent() {
+                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                eprintln!("Failed to create directory {:?}: {}", parent, e);
+                                return;
+                            }
+                        }
+
+                        if let Err(e) = segmented.save(&temp_path) {
+                            eprintln!("Failed to save temporary file {:?}: {}", temp_path, e);
+                            return;
+                        }
+
+                        job.payload.metadata.insert(
+                            "segmentation_complete".to_string(),
+                            "true".to_string(),
+                        );
                         job.payload
-                            .output_path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                    ));
+                            .metadata
+                            .insert("batch_size".to_string(), batch_size.to_string());
+                        job.payload
+                            .metadata
+                            .insert("temp_path".to_string(), temp_path.display().to_string());
 
-                    if let Some(parent) = temp_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| AnimeSegError::FileSystem {
-                            path: parent.to_path_buf(),
-                            operation: "directory creation".to_string(),
-                            source: e,
-                        })?;
-                    }
-
-                    segmented.save(&temp_path).map_err(|e| AnimeSegError::ImageProcessing {
-                        path: temp_path.display().to_string(),
-                        operation: "temporary file save".to_string(),
-                        source: Box::new(e),
-                    })?;
-
-                    job.payload.metadata.insert(
-                        "segmentation_complete".to_string(),
-                        "true".to_string(),
-                    );
-                    job.payload
-                        .metadata
-                        .insert("batch_size".to_string(), batch_size.to_string());
-                    job.payload
-                        .metadata
-                        .insert("temp_path".to_string(), temp_path.display().to_string());
-
-                    job.job_type = JobType::Postprocessing;
-
-                    Ok::<(), AnimeSegError>(())
-                })
-                .collect();
-
-            for result in save_results {
-                result?;
-            }
+                        job.job_type = JobType::Postprocessing;
+                    });
+                batch
+            }).await.unwrap();
 
             Ok(batch)
         })

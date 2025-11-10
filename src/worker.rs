@@ -2,10 +2,13 @@ use crate::errors::{AnimeSegError, Result};
 use crate::queue::{Job, JobType, QueueProvider};
 use async_trait::async_trait;
 use image::{DynamicImage, GenericImageView};
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tokio::time::timeout;
+use tokio::time::{interval, timeout};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 /// Abstracts worker pool to enable testing with different concurrency strategies
 #[async_trait]
@@ -29,6 +32,19 @@ pub enum WorkerType {
     Postprocessing,
 }
 
+/// Configuration for worker pool processing loop
+struct WorkerLoopConfig<Q: QueueProvider> {
+    queue_provider: Arc<Q>,
+    input_queue: String,
+    output_queue: String,
+    worker_type: WorkerType,
+    max_output_queue_size: Option<usize>,
+    is_running: Arc<RwLock<bool>>,
+    semaphore: Arc<Semaphore>,
+    timeout_duration: Duration,
+    cancellation_token: CancellationToken,
+}
+
 /// CPU-bound worker pool for pre/post-processing with semaphore-based concurrency control
 pub struct CpuWorkerPool<Q: QueueProvider> {
     queue_provider: Arc<Q>,
@@ -38,8 +54,10 @@ pub struct CpuWorkerPool<Q: QueueProvider> {
     max_workers: usize,
     max_output_queue_size: Option<usize>,
     semaphore: Arc<Semaphore>,
-    is_running: Arc<tokio::sync::RwLock<bool>>,
+    is_running: Arc<RwLock<bool>>,
     timeout_duration: Duration,
+    tracker: TaskTracker,
+    cancellation_token: CancellationToken,
 }
 
 impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
@@ -58,8 +76,10 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
             max_workers,
             max_output_queue_size: None,
             semaphore: Arc::new(Semaphore::new(max_workers)),
-            is_running: Arc::new(tokio::sync::RwLock::new(false)),
+            is_running: Arc::new(RwLock::new(false)),
             timeout_duration: Duration::from_secs(30),
+            tracker: TaskTracker::new(),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -73,19 +93,31 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
         self
     }
 
-    async fn process_jobs_loop(
-        queue_provider: Arc<Q>,
-        input_queue: String,
-        output_queue: String,
-        worker_type: WorkerType,
-        max_output_queue_size: Option<usize>,
-        is_running: Arc<tokio::sync::RwLock<bool>>,
-        semaphore: Arc<Semaphore>,
-        timeout_duration: Duration,
-    ) -> Result<()> {
+    async fn process_jobs_loop(config: WorkerLoopConfig<Q>) -> Result<()> {
+        let WorkerLoopConfig {
+            queue_provider,
+            input_queue,
+            output_queue,
+            worker_type,
+            max_output_queue_size,
+            is_running,
+            semaphore,
+            timeout_duration,
+            cancellation_token,
+        } = config;
+
+        let mut check_interval = interval(Duration::from_millis(100));
+
         loop {
-            if !*is_running.read().await {
-                break;
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    break;
+                }
+                _ = check_interval.tick() => {
+                    if !*is_running.read() {
+                        break;
+                    }
+                }
             }
 
             let has_job = match queue_provider.queue_size(&input_queue).await {
@@ -94,12 +126,6 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
             };
 
             if !has_job {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-
-            if semaphore.available_permits() == 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
 
@@ -111,7 +137,7 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
             let semaphore_clone = Arc::clone(&semaphore);
 
             tokio::spawn(async move {
-                let _permit = semaphore_clone.acquire().await;
+                let _permit = semaphore_clone.acquire().await.unwrap();
 
                 let maybe_job = queue_provider_clone.dequeue(&input_queue_clone).await;
 
@@ -174,12 +200,10 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                                     {
                                         eprintln!("Failed to re-enqueue failed job: {}", retry_err);
                                     }
-                                } else {
-                                    if let Err(error_err) =
-                                        queue_provider_clone.enqueue("error", job).await
-                                    {
-                                        eprintln!("Failed to enqueue error job: {}", error_err);
-                                    }
+                                } else if let Err(error_err) =
+                                    queue_provider_clone.enqueue("error", job).await
+                                {
+                                    eprintln!("Failed to enqueue error job: {}", error_err);
                                 }
                             }
                         }
@@ -192,15 +216,13 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
                                 {
                                     eprintln!("Failed to re-enqueue timed out job: {}", retry_err);
                                 }
-                            } else {
-                                if let Err(error_err) =
-                                    queue_provider_clone.enqueue("error", job).await
-                                {
-                                    eprintln!(
-                                        "Failed to enqueue timed out job to error queue: {}",
-                                        error_err
-                                    );
-                                }
+                            } else if let Err(error_err) =
+                                queue_provider_clone.enqueue("error", job).await
+                            {
+                                eprintln!(
+                                    "Failed to enqueue timed out job to error queue: {}",
+                                    error_err
+                                );
                             }
                         }
                     }
@@ -217,7 +239,7 @@ impl<Q: QueueProvider + 'static> CpuWorkerPool<Q> {
 #[async_trait]
 impl<Q: QueueProvider + 'static> WorkerPool for CpuWorkerPool<Q> {
     async fn start(&self) -> Result<()> {
-        let mut running = self.is_running.write().await;
+        let mut running = self.is_running.write();
         if *running {
             return Err(AnimeSegError::WorkerPool {
                 pool_id: format!("{:?}", self.worker_type),
@@ -232,28 +254,20 @@ impl<Q: QueueProvider + 'static> WorkerPool for CpuWorkerPool<Q> {
         *running = true;
         drop(running);
 
-        let queue_provider = Arc::clone(&self.queue_provider);
-        let input_queue = self.input_queue.clone();
-        let output_queue = self.output_queue.clone();
-        let worker_type = self.worker_type.clone();
-        let max_output_queue_size = self.max_output_queue_size;
-        let is_running = Arc::clone(&self.is_running);
-        let semaphore = Arc::clone(&self.semaphore);
-        let timeout_duration = self.timeout_duration;
+        let config = WorkerLoopConfig {
+            queue_provider: Arc::clone(&self.queue_provider),
+            input_queue: self.input_queue.clone(),
+            output_queue: self.output_queue.clone(),
+            worker_type: self.worker_type.clone(),
+            max_output_queue_size: self.max_output_queue_size,
+            is_running: Arc::clone(&self.is_running),
+            semaphore: Arc::clone(&self.semaphore),
+            timeout_duration: self.timeout_duration,
+            cancellation_token: self.cancellation_token.clone(),
+        };
 
-        tokio::spawn(async move {
-            if let Err(e) = Self::process_jobs_loop(
-                queue_provider,
-                input_queue,
-                output_queue,
-                worker_type,
-                max_output_queue_size,
-                is_running,
-                semaphore,
-                timeout_duration,
-            )
-            .await
-            {
+        self.tracker.spawn(async move {
+            if let Err(e) = Self::process_jobs_loop(config).await {
                 eprintln!("Worker pool error: {}", e);
             }
         });
@@ -262,13 +276,19 @@ impl<Q: QueueProvider + 'static> WorkerPool for CpuWorkerPool<Q> {
     }
 
     async fn stop(&self) -> Result<()> {
-        let mut running = self.is_running.write().await;
-        *running = false;
+        {
+            let mut running = self.is_running.write();
+            *running = false;
+        }
+
+        self.tracker.close();
+        self.cancellation_token.cancel();
+        self.tracker.wait().await;
         Ok(())
     }
 
     async fn is_running(&self) -> bool {
-        *self.is_running.read().await
+        *self.is_running.read()
     }
 
     async fn worker_count(&self) -> usize {

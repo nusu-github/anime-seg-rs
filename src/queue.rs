@@ -1,10 +1,11 @@
 use crate::errors::{AnimeSegError, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 /// Queue abstraction following dependency inversion principle to hide
@@ -86,13 +87,23 @@ impl Job {
 #[derive(Debug)]
 pub struct InMemoryQueueProvider {
     queues: Arc<Mutex<std::collections::HashMap<String, VecDeque<Job>>>>,
+    notifiers: Arc<Mutex<std::collections::HashMap<String, Arc<Notify>>>>,
 }
 
 impl InMemoryQueueProvider {
     pub fn new() -> Self {
         Self {
             queues: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            notifiers: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    fn get_or_create_notifier(&self, queue_name: &str) -> Arc<Notify> {
+        let mut notifiers = self.notifiers.lock();
+        notifiers
+            .entry(queue_name.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
     }
 }
 
@@ -105,24 +116,31 @@ impl Default for InMemoryQueueProvider {
 #[async_trait]
 impl QueueProvider for InMemoryQueueProvider {
     async fn enqueue(&self, queue_name: &str, job: Job) -> Result<()> {
-        let mut queues = self.queues.lock().await;
-        let queue = queues
-            .entry(queue_name.to_string())
-            .or_insert_with(VecDeque::new);
-        queue.push_back(job);
+        let notifier = self.get_or_create_notifier(queue_name);
+        {
+            let mut queues = self.queues.lock();
+            let queue = queues
+                .entry(queue_name.to_string())
+                .or_default();
+            queue.push_back(job);
+        }
+        notifier.notify_one();
         Ok(())
     }
 
     async fn enqueue_with_limit(&self, queue_name: &str, job: Job, max_size: usize) -> Result<()> {
+        let notifier = self.get_or_create_notifier(queue_name);
         loop {
             {
-                let mut queues = self.queues.lock().await;
+                let mut queues = self.queues.lock();
                 let queue = queues
                     .entry(queue_name.to_string())
-                    .or_insert_with(VecDeque::new);
+                    .or_default();
 
                 if queue.len() < max_size {
                     queue.push_back(job);
+                    drop(queues);
+                    notifier.notify_one();
                     return Ok(());
                 }
             }
@@ -132,20 +150,20 @@ impl QueueProvider for InMemoryQueueProvider {
     }
 
     async fn dequeue(&self, queue_name: &str) -> Result<Option<Job>> {
-        let mut queues = self.queues.lock().await;
+        let mut queues = self.queues.lock();
         let queue = queues
             .entry(queue_name.to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
         Ok(queue.pop_front())
     }
 
     async fn queue_size(&self, queue_name: &str) -> Result<usize> {
-        let queues = self.queues.lock().await;
+        let queues = self.queues.lock();
         Ok(queues.get(queue_name).map(|q| q.len()).unwrap_or(0))
     }
 
     async fn clear_queue(&self, queue_name: &str) -> Result<()> {
-        let mut queues = self.queues.lock().await;
+        let mut queues = self.queues.lock();
         if let Some(queue) = queues.get_mut(queue_name) {
             queue.clear();
         }
