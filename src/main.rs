@@ -1,29 +1,13 @@
-use anime_seg_rs::distributed::DistributedImageProcessor;
-use anime_seg_rs::queue::InMemoryQueueProvider;
-use anime_seg_rs::{Config, Model};
-use anyhow::Result;
-use std::sync::Arc;
+use anime_seg_rs::{Config, ImageProcessor, Result};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    println!("Initializing ONNX Runtime environment...");
-    ort::init()
-        .with_name("anime-seg-rs")
-        .with_telemetry(false)
-        .commit()?;
-    println!("ONNX Runtime initialization complete");
-
+fn main() -> Result<()> {
     let config = Config::new();
 
     println!("Loading model...");
-    let model = Model::new(&config.model_path, config.device_id)?;
+    let mut processor = ImageProcessor::with_onnx_model(config)?;
     println!("Model loading complete");
 
-    let queue_provider = Arc::new(InMemoryQueueProvider::new());
+    processor.process_directory()?;
 
-    let processor = DistributedImageProcessor::new(model, queue_provider, config.clone());
-    processor
-        .process_directory(&config.input_dir, &config.output_dir)
-        .await?;
     Ok(())
 }

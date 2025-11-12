@@ -1,28 +1,44 @@
-pub mod batch;
 pub mod config;
-pub mod distributed;
 pub mod errors;
 pub mod model;
-pub mod queue;
 pub mod traits;
-pub mod worker;
 
-pub mod mocks;
-
+use glob::glob;
 use image::{DynamicImage, ImageFormat};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 pub use config::Config;
 pub use errors::{AnimeSegError, Result};
 pub use model::Model;
 pub use traits::*;
 
-#[cfg(test)]
-pub use mocks::*;
+/// Extract the base directory from a glob pattern by finding the directory
+/// portion before any wildcard characters.
+/// Examples: "input/**/*.jpg" -> "input", "a/b/**/*" -> "a/b", "*.jpg" -> "."
+fn extract_base_directory(pattern: &str) -> PathBuf {
+    // Find the position of the first wildcard character
+    let wildcard_pos = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
+
+    if wildcard_pos == 0 {
+        // Pattern starts with a wildcard, use current directory
+        return PathBuf::from(".");
+    }
+
+    // Take everything before the wildcard
+    let before_wildcard = &pattern[..wildcard_pos];
+
+    // Find the last path separator before the wildcard
+    let last_sep = before_wildcard
+        .rfind(['/', '\\'])
+        .map(|pos| &before_wildcard[..pos]);
+
+    match last_sep {
+        Some(base) if !base.is_empty() => PathBuf::from(base),
+        _ => PathBuf::from("."),
+    }
+}
 
 pub struct ImageProcessor<M: ImageSegmentationModel> {
     model: M,
@@ -30,32 +46,21 @@ pub struct ImageProcessor<M: ImageSegmentationModel> {
 }
 
 impl<M: ImageSegmentationModel> ImageProcessor<M> {
-    pub const fn new(model: M, config: Config) -> Self {
+    pub fn new(model: M, config: Config) -> Self {
         Self { model, config }
     }
 
-    pub fn process_directory(&self) -> Result<()> {
-        let input_path = &self.config.input_dir;
-        let output_path = &self.config.output_dir;
+    pub fn process_directory(&mut self) -> Result<()> {
+        let input_pattern = &self.config.input_pattern;
+        let output_path = self.config.output_dir.clone();
 
-        if !input_path.exists() {
-            return Err(AnimeSegError::FileSystem {
-                path: input_path.clone(),
-                operation: "directory existence check".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Input directory does not exist",
-                ),
-            });
-        }
-
-        fs::create_dir_all(output_path).map_err(|e| AnimeSegError::FileSystem {
+        fs::create_dir_all(&output_path).map_err(|e| AnimeSegError::FileSystem {
             path: output_path.clone(),
             operation: "directory creation".to_string(),
             source: e,
         })?;
 
-        let image_files = self.collect_image_files(input_path)?;
+        let image_files = self.collect_image_files(input_pattern)?;
 
         if image_files.is_empty() {
             println!("No image files found to process");
@@ -72,26 +77,36 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
                 .progress_chars("#>-"),
         );
 
-        image_files
-            .par_iter()
-            .try_for_each(|input_file| -> Result<()> {
-                self.process_single_image(input_file, output_path)?;
-                pb.inc(1);
-                Ok(())
-            })?;
+        for input_file in &image_files {
+            if let Err(e) = self.process_single_image(input_file, &output_path) {
+                eprintln!("Failed to process image {}: {}", input_file.display(), e);
+            }
+            pb.inc(1);
+        }
 
         pb.finish_with_message("Processing complete");
         println!("All image processing completed");
         Ok(())
     }
 
-    fn collect_image_files(&self, input_path: &Path) -> Result<Vec<PathBuf>> {
+    fn collect_image_files(&self, pattern: &str) -> Result<Vec<PathBuf>> {
         let mut image_files = Vec::new();
 
-        for entry in WalkDir::new(input_path).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.is_file() && self.is_supported_image_format(path) {
-                image_files.push(path.to_path_buf());
+        // Execute glob pattern and filter for valid image files
+        for entry in glob(pattern).map_err(|e| AnimeSegError::ImageProcessing {
+            path: pattern.to_string(),
+            operation: "glob pattern parsing".to_string(),
+            source: Box::new(e),
+        })? {
+            match entry {
+                Ok(path) => {
+                    if path.is_file() && self.is_supported_image_format(&path) {
+                        image_files.push(path);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to read path: {}", e);
+                }
             }
         }
 
@@ -100,29 +115,24 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
 
     pub fn is_supported_image_format(&self, path: &Path) -> bool {
         if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-            matches!(
-                extension.to_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tiff" | "avif"
-            )
+            let format = ImageFormat::from_extension(extension);
+            if let Some(fmt) = format {
+                return fmt.reading_enabled();
+            }
+            false
         } else {
             false
         }
     }
 
-    fn process_single_image(&self, input_file: &Path, output_dir: &Path) -> Result<()> {
+    fn process_single_image(&mut self, input_file: &Path, output_dir: &Path) -> Result<()> {
         let img = image::open(input_file).map_err(|e| AnimeSegError::ImageProcessing {
             path: input_file.display().to_string(),
             operation: "image loading".to_string(),
             source: Box::new(e),
         })?;
 
-        let processed_img =
-            self.segment_image(&img)
-                .map_err(|e| AnimeSegError::ImageProcessing {
-                    path: input_file.display().to_string(),
-                    operation: "image segmentation".to_string(),
-                    source: Box::new(e),
-                })?;
+        let processed_img = self.segment_image(&img)?;
 
         let relative_path = self.get_relative_path(input_file)?;
         let output_file = output_dir
@@ -137,15 +147,8 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
             })?;
         }
 
-        let output_format = match self.config.format.as_str() {
-            "jpg" | "jpeg" => ImageFormat::Jpeg,
-            "png" => ImageFormat::Png,
-            "webp" => ImageFormat::WebP,
-            "bmp" => ImageFormat::Bmp,
-            "gif" => ImageFormat::Gif,
-            "tiff" => ImageFormat::Tiff,
-            _ => ImageFormat::Png,
-        };
+        let output_format =
+            ImageFormat::from_extension(&self.config.format).unwrap_or(ImageFormat::Png);
 
         processed_img
             .save_with_format(&output_file, output_format)
@@ -158,21 +161,21 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
         Ok(())
     }
 
-    fn segment_image(&self, img: &DynamicImage) -> Result<DynamicImage> {
+    fn segment_image(&mut self, img: &DynamicImage) -> Result<DynamicImage> {
         self.model.segment_image(img)
     }
 
     pub fn get_relative_path(&self, input_file: &Path) -> Result<PathBuf> {
-        let input_dir = &self.config.input_dir;
+        let base_dir = extract_base_directory(&self.config.input_pattern);
         input_file
-            .strip_prefix(input_dir)
+            .strip_prefix(&base_dir)
             .map(|p| p.to_path_buf())
             .map_err(|_| AnimeSegError::FileSystem {
                 path: input_file.to_path_buf(),
                 operation: "relative path extraction".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "Input file is not within input directory",
+                    "Input file is not within base directory",
                 ),
             })
     }
@@ -180,72 +183,7 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
 
 impl ImageProcessor<Model> {
     pub fn with_onnx_model(config: Config) -> Result<Self> {
-        let model = Model::new(&config.model_path, config.device_id)?;
+        let model = Model::new(&config.model_path)?;
         Ok(Self::new(model, config))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_supported_formats() {
-        // 静的な関数テスト（ImageProcessorインスタンス不要）
-        let test_cases = vec![
-            ("test.jpg", true),
-            ("test.jpeg", true),
-            ("test.png", true),
-            ("test.webp", true),
-            ("test.txt", false),
-            ("test", false),
-        ];
-
-        for (filename, expected) in test_cases {
-            let path = Path::new(filename);
-            let is_supported =
-                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-                    matches!(
-                        extension.to_lowercase().as_str(),
-                        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tiff" | "avif"
-                    )
-                } else {
-                    false
-                };
-            assert_eq!(is_supported, expected);
-        }
-    }
-
-    #[test]
-    fn test_relative_path_calculation() -> Result<()> {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new()?;
-        let input_dir = temp_dir.path().join("input");
-        let subdir = input_dir.join("subdir");
-        fs::create_dir_all(&subdir)?;
-
-        let config = Config {
-            input_dir,
-            output_dir: "output".into(),
-            model_path: "model.onnx".into(),
-            format: "png".to_string(),
-            device_id: 0,
-            batch_size: 1,
-            batch_timeout_ms: 5000,
-            preprocessing_workers: 4,
-            postprocessing_workers: 4,
-            max_inference_queue_size: 100,
-            worker_timeout_secs: 30,
-            inference_timeout_per_batch_item_secs: 5,
-        };
-
-        let processor = ImageProcessor::new(MockSegmentationModel::new(768), config);
-
-        let test_file = subdir.join("test.jpg");
-        let relative = processor.get_relative_path(&test_file)?;
-
-        assert_eq!(relative, Path::new("subdir/test.jpg"));
-        Ok(())
     }
 }
