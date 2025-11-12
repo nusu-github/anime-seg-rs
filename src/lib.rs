@@ -24,12 +24,6 @@ pub use traits::*;
 /// "input/**/*.jpg", we want "input/sub/file.jpg" to become "output/sub/file.jpg",
 /// not "output/input/sub/file.jpg". This function extracts "input" as the base
 /// to enable proper relative path computation.
-///
-/// # Examples
-///
-/// - `"input/**/*.jpg"` → `"input"`
-/// - `"a/b/**/*"` → `"a/b"`
-/// - `"*.jpg"` → `"."`
 fn extract_base_directory(pattern: &str) -> PathBuf {
     let wildcard_pos = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
 
@@ -49,28 +43,28 @@ fn extract_base_directory(pattern: &str) -> PathBuf {
     }
 }
 
-/// Simple parallel image processor using Rayon for single-machine batch processing.
+/// Batch image processor using trait-based model abstraction.
 ///
-/// This processor is generic over any type implementing `ImageSegmentationModel`,
-/// allowing different model backends (ONNX, TensorRT, etc.) to be used with the
-/// same processing logic. Uses Rayon for straightforward parallel processing without
-/// the complexity of queues or distributed architecture.
+/// Generic over any type implementing `ImageSegmentationModel`, allowing different
+/// model backends to be used with the same processing logic. Processes images
+/// sequentially to maintain simplicity and avoid resource contention with GPU inference.
 pub struct ImageProcessor<M: ImageSegmentationModel> {
     model: M,
     config: Config,
 }
 
 impl<M: ImageSegmentationModel> ImageProcessor<M> {
-    /// Create a new image processor with the given model and configuration.
     pub fn new(model: M, config: Config) -> Self {
         Self { model, config }
     }
 
     /// Process all images matching the input pattern and save results to output directory.
     ///
-    /// This method orchestrates the entire processing workflow: collecting image files,
-    /// creating output directories, processing each image with progress tracking, and
-    /// handling errors gracefully without stopping the entire batch.
+    /// # Error handling strategy
+    ///
+    /// Individual image failures are logged but do not stop the entire batch. This design
+    /// prioritizes completing as much work as possible rather than failing fast, which is
+    /// appropriate for batch processing where partial results are valuable.
     pub fn process_directory(&mut self) -> Result<()> {
         let input_pattern = &self.config.input_pattern;
         let output_path = self.config.output_dir.clone();
@@ -111,12 +105,9 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
     }
 
     /// Collect all valid image files matching the glob pattern.
-    ///
-    /// Only includes files with supported image formats to avoid processing errors later.
     fn collect_image_files(&self, pattern: &str) -> Result<Vec<PathBuf>> {
         let mut image_files = Vec::new();
 
-        // Execute glob pattern and filter for valid image files
         for entry in glob(pattern).map_err(|e| AnimeSegError::ImageProcessing {
             path: pattern.to_string(),
             operation: "glob pattern parsing".to_string(),
@@ -139,9 +130,11 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
 
     /// Check if the file has a supported image format that can be read.
     ///
-    /// Uses the `image` crate's format detection to determine support dynamically,
-    /// which allows the set of supported formats to expand automatically when
-    /// enabling additional feature flags.
+    /// # Why dynamic format detection
+    ///
+    /// Using the image crate's format detection allows the set of supported formats
+    /// to expand automatically when enabling additional feature flags, avoiding the
+    /// need to maintain a hardcoded list of extensions.
     pub fn is_supported_image_format(&self, path: &Path) -> bool {
         if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
             let format = ImageFormat::from_extension(extension);
@@ -156,9 +149,11 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
 
     /// Process a single image: load, segment, and save with preserved directory structure.
     ///
-    /// The output path preserves the relative directory structure from the input pattern's
-    /// base directory. This ensures that hierarchical folder organization is maintained
-    /// in the output, which is essential for batch processing large organized datasets.
+    /// # Why preserve directory structure
+    ///
+    /// Maintaining the relative directory structure from input to output is essential
+    /// for batch processing large organized datasets where folder hierarchy provides
+    /// semantic organization (e.g., by date, category, or project).
     fn process_single_image(&mut self, input_file: &Path, output_dir: &Path) -> Result<()> {
         let img = image::open(input_file).map_err(|e| AnimeSegError::ImageProcessing {
             path: input_file.display().to_string(),
@@ -195,16 +190,18 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
         Ok(())
     }
 
-    /// Delegate segmentation to the underlying model implementation.
     fn segment_image(&mut self, img: &DynamicImage) -> Result<DynamicImage> {
         self.model.segment_image(img)
     }
 
     /// Compute the relative path from the input pattern's base directory.
     ///
-    /// This is necessary to reconstruct the directory hierarchy in the output.
-    /// For example, with input pattern "photos/**/*.jpg" and file "photos/2024/jan/pic.jpg",
-    /// this returns "2024/jan/pic.jpg" so the output becomes "output/2024/jan/pic.png".
+    /// # Why this computation is necessary
+    ///
+    /// To reconstruct the directory hierarchy in the output while avoiding duplication
+    /// of the base directory. For example, with pattern "photos/**/*.jpg" and file
+    /// "photos/2024/jan/pic.jpg", this returns "2024/jan/pic.jpg" so the output becomes
+    /// "output/2024/jan/pic.png" rather than "output/photos/2024/jan/pic.png".
     pub fn get_relative_path(&self, input_file: &Path) -> Result<PathBuf> {
         let base_dir = extract_base_directory(&self.config.input_pattern);
         input_file
@@ -224,7 +221,9 @@ impl<M: ImageSegmentationModel> ImageProcessor<M> {
 impl ImageProcessor<Model> {
     /// Convenience constructor that creates an ONNX-based image processor.
     ///
-    /// This provides a simpler API for the common case of using the default ONNX model
+    /// # Why this exists
+    ///
+    /// Provides a simpler API for the common case of using the default ONNX model
     /// implementation, avoiding the need to construct the Model separately.
     pub fn with_onnx_model(config: Config) -> Result<Self> {
         let model = Model::new(&config.model_path)?;

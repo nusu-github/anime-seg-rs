@@ -17,33 +17,28 @@ use ort::{
     value::TensorRef,
 };
 
-/// Wraps an ONNX Runtime session for anime character segmentation inference.
+/// ONNX Runtime session for anime character segmentation inference.
 ///
-/// Session configuration is optimized to balance inference performance with memory usage:
-/// - Thread counts limited to 1 to avoid contention with GPU inference
-/// - Memory pattern and spinning disabled to reduce memory footprint
+/// # Session configuration rationale
+///
+/// Thread settings (intra=1, inter=1): Prevents CPU thread pool from interfering with
+/// GPU execution. CUDA handles parallelism internally; additional CPU threads would
+/// only add scheduling overhead.
+///
+/// Memory pattern disabled: Trades deterministic memory layout for lower peak usage.
+/// Pattern analysis adds overhead unnecessary for batch processing workloads.
+///
+/// Spinning disabled: CPU busy-waiting wastes resources when GPU is the bottleneck.
+/// Context switching latency is acceptable given GPU-bound inference.
+///
+/// Level3 optimization: Maximizes graph fusion and operator optimization at compile time.
+/// One-time cost during model loading amortized across all inference calls.
 pub struct Model {
     pub image_size: u32,
     session: Session,
 }
 
 impl Model {
-    /// Creates a new Model from an ONNX file with optimized session settings.
-    ///
-    /// # Configuration Rationale
-    ///
-    /// Thread settings (intra=1, inter=1): Prevents CPU thread pool from interfering with
-    /// GPU execution. CUDA handles parallelism internally, so additional CPU threads would
-    /// only add scheduling overhead.
-    ///
-    /// Memory pattern disabled: Trades deterministic memory layout for lower peak usage.
-    /// Pattern analysis adds overhead that's unnecessary for batch processing workloads.
-    ///
-    /// Spinning disabled: CPU busy-waiting wastes resources when GPU is the bottleneck.
-    /// Context switching latency is acceptable given the GPU-bound nature of inference.
-    ///
-    /// Level3 optimization: Maximizes graph fusion and operator optimization at compile time.
-    /// One-time cost during model loading is amortized across all inference calls.
     pub fn new(model_path: &Path) -> Result<Self> {
         let session = Session::builder()
             .map_err(|e| AnimeSegError::Model {
@@ -103,8 +98,6 @@ impl Model {
                     )),
                 })?;
 
-        // Extract image size from model's input tensor shape: [batch, channels, height, width]
-        // Index 2 (height) is used as all anime segmentation models expect square inputs
         let image_size = *input_shape.get(2).ok_or_else(|| AnimeSegError::Model {
             operation: "model input shape extraction".to_string(),
             source: Box::new(std::io::Error::new(
@@ -136,11 +129,13 @@ impl ImageSegmentationModel for Model {
         self.image_size
     }
 
-    /// Runs inference on a preprocessed image tensor.
+    /// Run inference on a preprocessed image tensor.
     ///
-    /// Converts tensor to standard (C-contiguous) layout before inference because ONNX Runtime
-    /// requires contiguous memory for zero-copy tensor operations. Non-standard layouts would
-    /// force a defensive copy inside ort, so we control the conversion explicitly.
+    /// # Why standard layout conversion
+    ///
+    /// ONNX Runtime requires contiguous memory for zero-copy tensor operations.
+    /// Non-standard layouts would force a defensive copy inside ort, so we control
+    /// the conversion explicitly to ensure predictable performance.
     fn predict(&mut self, tensor: ArrayView4<f32>) -> Result<Array4<f32>> {
         let outputs = self.session.run(
             ort::inputs!["img" => TensorRef::from_array_view(&tensor.as_standard_layout())?],
@@ -152,24 +147,23 @@ impl ImageSegmentationModel for Model {
     }
 }
 
-/// Prepares an image for model inference by resizing, padding, and normalizing.
+/// Prepare an image for model inference by resizing, padding, and normalizing.
 ///
 /// Returns the preprocessed tensor and crop coordinates for postprocessing.
 /// The crop array format is [pad_x, pad_y, original_width, original_height].
 ///
-/// # Processing Pipeline Rationale
+/// # Processing rationale
 ///
-/// 1. Resize to model_size: Maintains aspect ratio while fitting within model input constraints.
-///    Lanczos3 filter chosen for superior edge preservation critical to anime line art.
+/// Lanczos3 resizing: Superior edge preservation critical for anime line art.
 ///
-/// 2. Square padding: Models expect square inputs. Black padding (RGB 0,0,0) is used because
-///    it represents "no content" and won't confuse the model's boundary detection.
+/// Square padding with black (RGB 0,0,0): Models expect square inputs. Black represents
+/// "no content" and won't confuse the model's boundary detection.
 ///
-/// 3. HWC to CHW permutation: ONNX models expect channel-first layout (NCHW format).
-///    This transformation is done after padding to minimize data movement.
+/// HWC to CHW permutation: ONNX models expect channel-first layout (NCHW format).
+/// Done after padding to minimize data movement.
 ///
-/// 4. [0, 255] to [0.0, 1.0] normalization: Standard preprocessing for neural networks,
-///    ensuring numerical stability during inference.
+/// [0, 255] to [0.0, 1.0] normalization: Standard neural network preprocessing for
+/// numerical stability during inference.
 pub fn preprocess(image: &DynamicImage, image_size: u32) -> Result<(Array4<f32>, [u32; 4])> {
     let (w, h) = image.dimensions();
     let color = image.color();
@@ -215,21 +209,21 @@ pub fn preprocess(image: &DynamicImage, image_size: u32) -> Result<(Array4<f32>,
     Ok((tensor, [x as u32, y as u32, w, h]))
 }
 
-/// Reverses preprocessing transformations to restore the mask to original image dimensions.
+/// Reverse preprocessing transformations to restore mask to original image dimensions.
 ///
 /// Takes the model output mask and the crop coordinates from preprocessing, returning
-/// a mask that matches the original input image dimensions.
+/// a mask matching the original input image dimensions.
 ///
-/// # Processing Steps Rationale
+/// # Why two-step processing
 ///
-/// 1. Resize from model_size to padded dimensions: Upscales the mask to match the
-///    padded image size. Lanczos3 maintains smooth mask boundaries for better visual quality.
+/// Resize from model_size to padded dimensions: Upscales the mask to match the
+/// padded image size. Lanczos3 maintains smooth mask boundaries for better visual quality.
 ///
-/// 2. Crop to remove padding: Extracts the region corresponding to actual image content,
-///    discarding the black padding areas added during preprocessing.
+/// Crop to remove padding: Extracts the region corresponding to actual image content,
+/// discarding the black padding areas added during preprocessing.
 ///
-/// This two-step approach (resize then crop) is necessary because the model outputs a
-/// square mask, but we need a mask matching the original aspect ratio.
+/// This two-step approach is necessary because the model outputs a square mask, but we
+/// need a mask matching the original aspect ratio.
 pub fn postprocess_mask(
     mask: Array4<f32>,
     image_size: u32,
@@ -260,7 +254,13 @@ pub fn postprocess_mask(
     Ok(dst_img.to_luma32f())
 }
 
-/// Applies the segmentation mask to the original image, producing an RGBA output.
+/// Apply the segmentation mask to the original image, producing RGBA output.
+///
+/// # Why foreground color estimation
+///
+/// The estimate_foreground_colors function improves edge quality by estimating
+/// true foreground colors where transparency is partial, reducing fringing artifacts
+/// that occur when extracting subjects from backgrounds.
 fn apply_mask_to_image(
     img: &DynamicImage,
     mask: &ImageBuffer<Luma<f32>, Vec<f32>>,

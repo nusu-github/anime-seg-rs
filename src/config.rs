@@ -2,6 +2,14 @@ use clap::Parser;
 use image::ImageFormat;
 use std::path::PathBuf;
 
+/// Command-line configuration for the anime segmentation tool.
+///
+/// # Why clap's derive macro
+///
+/// Using clap's derive API provides automatic help generation, type validation,
+/// and ergonomic argument parsing without manual string manipulation. The derive
+/// approach is preferred over the builder API for its compile-time safety and
+/// reduced boilerplate.
 #[derive(Parser, Clone, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {
@@ -28,13 +36,26 @@ impl Config {
 }
 
 impl Default for Config {
+    /// Provide a default configuration for testing purposes.
+    ///
+    /// # Why this exists
+    ///
+    /// Tests need valid Config instances without requiring command-line arguments.
+    /// This default implementation provides placeholder values that satisfy the
+    /// type system. Production code uses `Config::new()` which parses real arguments.
     fn default() -> Self {
-        // This is mainly for tests, parse() is the main way to get a config.
-        // We need to provide dummy patterns that are valid for parsing.
         Config::parse_from(["test", "input/**/*", "--model-path", "model.onnx"])
     }
 }
 
+/// Validate that the requested format is supported for writing.
+///
+/// # Why validation at parse time
+///
+/// Failing early during argument parsing provides immediate feedback to users
+/// rather than discovering unsupported formats after potentially expensive processing.
+/// The validation uses the image crate's runtime capability detection, ensuring
+/// we only accept formats that are actually enabled through feature flags.
 fn check_format(s: &str) -> Result<String, String> {
     let supported: Vec<_> = ImageFormat::all()
         .filter(|f| f.writing_enabled())
