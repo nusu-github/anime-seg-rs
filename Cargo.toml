@@ -31,7 +31,7 @@ image-avif = ["image/avif"]
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5.51", features = ["derive"] }
-fast_image_resize = { version = "5.3.0", features = ["image"] }
+fast_image_resize = { version = "6.0.0", features = ["image"] }
 glob = "0.3"
 image = { version = "0.25", default-features = false }
 imageops-kit = { git = "https://github.com/nusu-github/imageops-kit", version = "0.1.0" }
